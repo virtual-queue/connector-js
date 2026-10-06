@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  VQueue connector for CloudFront (Lambda@Edge). Creates the two functions, their
+  role, and a Secrets Manager secret holding your subdomain and private key.
+  After the stack is created, associate the two function versions listed in
+  Outputs with a CloudFront behavior (viewer-request and viewer-response).
+
+# Lambda@Edge only deploys from us-east-1. Fail early with a clear message
+# instead of a cryptic error halfway through.
+Rules:
+  OnlyUsEast1:
+    Assertions:
+      - Assert:
+          Fn::Equals:
+            - Ref: AWS::Region
+            - us-east-1
+        AssertDescription: Lambda@Edge functions must be created in US East (N. Virginia), us-east-1.
+
+Parameters:
+  Client:
+    Type: String
+    Description: Your company subdomain in VQueue (the same value the JS adapter uses as data-vq-client).
+    AllowedPattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+    ConstraintDescription: Lowercase letters, digits and hyphens only.
+  PrivateKey:
+    Type: String
+    NoEcho: true
+    Description: Your company private_key. It stays in your AWS account, inside a Secrets Manager secret.
+    # The key is embedded in a JSON document, so quotes and backslashes are rejected.
+    AllowedPattern: "^[A-Za-z0-9+/=_.-]+$"
+    ConstraintDescription: The private key contains only letters, digits and + / = _ . -
+  AdminHost:
+    Type: String
+    Default: clients.virtual-queue.com
+    Description: Host that serves your ACL settings. Leave the default unless support tells you otherwise.
+  ReleaseVersion:
+    Type: String
+    Default: __VERSION__
+    Description: Connector release to install.
+  CodeBucket:
+    Type: String
+    Default: __BUCKET__
+    Description: Bucket that hosts the connector release. Leave the default.
+
+Resources:
+  ConnectorSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      # Fixed name: the function bundle cannot be parameterized per install, so it
+      # always reads this secret.
+      Name: vqueue/connector
+      Description: VQueue connector configuration (subdomain and private key).
+      SecretString:
+        Fn::Sub: '{"client":"${Client}","privateKey":"${PrivateKey}","adminHost":"${AdminHost}"}'
+
+  ConnectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - edgelambda.amazonaws.com
+      Policies:
+        - PolicyName: vqueue-connector
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadOwnConfig
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  Ref: ConnectorSecret
+              # Lambda@Edge writes logs to a log group in the region closest to the
+              # visitor, so the region cannot be pinned here.
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+
+  ViewerRequestFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: VQueue connector, viewer-request
+      Runtime: nodejs22.x
+      Handler: index.handler
+      MemorySize: 128
+      Timeout: 5
+      Role:
+        Fn::GetAtt: [ConnectorRole, Arn]
+      Code:
+        S3Bucket:
+          Ref: CodeBucket
+        S3Key:
+          Fn::Sub: releases/v${ReleaseVersion}/viewer-request.zip
+
+  ViewerResponseFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: VQueue connector, viewer-response
+      Runtime: nodejs22.x
+      Handler: index.handler
+      MemorySize: 128
+      Timeout: 5
+      Role:
+        Fn::GetAtt: [ConnectorRole, Arn]
+      Code:
+        S3Bucket:
+          Ref: CodeBucket
+        S3Key:
+          Fn::Sub: releases/v${ReleaseVersion}/viewer-response.zip
+
+  # Lambda@Edge cannot use $LATEST: CloudFront needs a published version. The
+  # description carries the release so a new release publishes a new version
+  # (a Version resource is otherwise not replaced when only the code changes).
+  ViewerRequestVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName:
+        Ref: ViewerRequestFunction
+      Description:
+        Fn::Sub: release ${ReleaseVersion}
+
+  ViewerResponseVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName:
+        Ref: ViewerResponseFunction
+      Description:
+        Fn::Sub: release ${ReleaseVersion}
+
+Outputs:
+  ViewerRequestArn:
+    Description: Associate with your CloudFront behavior as the VIEWER REQUEST function.
+    Value:
+      Ref: ViewerRequestVersion
+  ViewerResponseArn:
+    Description: Associate with your CloudFront behavior as the VIEWER RESPONSE function.
+    Value:
+      Ref: ViewerResponseVersion
+  NextStep:
+    Description: What is left to do.
+    Value: In CloudFront, edit the behavior to protect, and add the two ARNs above as Function associations (Viewer request, Viewer response).

@@ -1,0 +1,17 @@
+{
+	"name": "virtual-queue-connector-js",
+	"version": "0.0.0",
+	"private": true,
+	"description": "Conectores JavaScript de VirtualQueue: Lambda@Edge (CloudFront) y SDK de Node.",
+	"workspaces": [
+		"core",
+		"aws-lambda-edge",
+		"node"
+	],
+	"scripts": {
+		"test": "npm test --workspaces --if-present"
+	},
+	"devDependencies": {
+		"vitest": "^5.0.3"
+	}
+}

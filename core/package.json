@@ -1,0 +1,21 @@
+{
+	"name": "@vqueue/connector-core",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Lógica de protección de cola, sin plataforma. La comparten el conector de AWS y el SDK de Node.",
+	"main": "src/index.js",
+	"exports": {
+		".": "./src/index.js",
+		"./acl": "./src/acl.js",
+		"./pass": "./src/pass.js",
+		"./settings": "./src/settings.js",
+		"./decide": "./src/decide.js",
+		"./config": "./src/config.js"
+	},
+	"files": [
+		"src"
+	],
+	"scripts": {
+		"test": "vitest run"
+	}
+}
