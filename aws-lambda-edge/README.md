@@ -1,148 +1,150 @@
-# VQueue AWS Connector
+# VirtualQueue AWS Connector
 
-Protección de cola para clientes que quieren correrla en **su propio AWS**, en vez
-de detrás de nuestro edge. Hace lo mismo que el JS adapter (protección por reglas,
-sin sensores automáticos), pero del lado del servidor: el visitante no puede
-saltearla desactivando JavaScript.
+Queue protection for customers who want to run it in **their own AWS account**,
+instead of behind our edge. It does what the JS adapter does (rule-based
+protection, no automatic load sensors), but on the server side: a visitor can't
+bypass it by disabling JavaScript.
 
-Son dos funciones **Lambda@Edge** asociadas a una distribución de CloudFront.
+It is two **Lambda@Edge** functions attached to a CloudFront distribution.
 
-## Qué hace
+## What it does
 
-1. **Bypass barato** — assets, `/api/`, WebSockets y métodos que no son GET/HEAD
-   pasan sin tocar red ni verificar nada. Un 302 sobre un POST perdería el body
-   del checkout, y en Lambda@Edge se paga por invocación.
-2. **Vuelta de la cola** — con `?vq_token=` (o el `?token=` legacy) canjea el
-   token contra `/api/v1/queue/verify`, emite la cookie `vq_pass_<event_id>` y
-   redirige al destino original. Si el token **no** es de la cola, el request
-   sigue el flujo normal: un `?token=` propio del sitio (reset de password, magic
-   link) nunca se secuestra.
-3. **ACLs** — descarga las reglas del cliente y aplica la que matchee, por
-   prioridad, primera gana.
-4. **Pase** — verifica la firma **offline** con la `private_key` de la compañía.
-   No llama a VQueue en cada request.
-5. **Renovación deslizante** — mientras el visitante navegue, el pase se extiende.
+1. **Cheap bypass** — assets, `/api/`, WebSockets, and methods other than GET/HEAD
+   pass through without touching the network or verifying anything. A 302 on a POST
+   would lose the checkout body, and Lambda@Edge is billed per invocation.
+2. **Return from the queue** — with `?vq_token=` (or the legacy `?token=`) it
+   exchanges the token with `/api/v1/queue/verify`, issues the `vq_pass_<event_id>`
+   cookie, and redirects to the original destination. If the token is **not** a
+   queue token, the request continues normally: your site's own `?token=` (password
+   reset, magic link) is never hijacked.
+3. **ACLs** — downloads your rules and applies the matching one: by priority, first
+   match wins.
+4. **Pass** — verifies the signature **offline** with your company's `private_key`.
+   It doesn't call VirtualQueue on every request.
+5. **Sliding renewal** — while the visitor keeps browsing, the pass is extended.
 
-Todo falla abierto: si no hay settings, si el verify no responde, si la config
-está mal, el visitante pasa. Un conector que rompe el sitio del cliente es peor
-que uno que no encola.
+Everything fails open: with no settings, an unresponsive verify endpoint, or a bad
+config, the visitor gets through. A connector that breaks your site is worse than
+one that doesn't queue.
 
-## Instalación
+## Installation
 
-Hay dos caminos. Los dos terminan igual: dos funciones Lambda@Edge asociadas a un
-behavior de CloudFront.
+There are two ways. Both end the same way: two Lambda@Edge functions attached to a
+CloudFront behavior.
 
-### A) Con CloudFormation (recomendado)
+### A) With CloudFormation (recommended)
 
-Un click abre la consola de AWS con todo cargado, en `us-east-1`:
+One click opens the AWS console with everything pre-filled, in `us-east-1`:
 
-> **[Launch Stack](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/new?stackName=vqueue-connector&templateURL=https%3A%2F%2Fvirtual-queue-connector-releases.s3.amazonaws.com%2Freleases%2Flatest%2Ftemplate.yaml)**
+[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/new?stackName=vqueue-connector&templateURL=https%3A%2F%2Fvirtual-queue-connector-releases.s3.amazonaws.com%2Freleases%2Flatest%2Ftemplate.yaml)
 
-Te pide dos datos:
+It asks for two values:
 
-- **Client**: el subdominio de tu compañía en VQueue (el mismo que usa el JS adapter).
-- **PrivateKey**: la `private_key` de tu compañía.
+- **Client**: your company subdomain in VirtualQueue (the same one the JS adapter
+  uses).
+- **PrivateKey**: your company `private_key`. Contact VirtualQueue support if you
+  don't have it.
 
-El stack crea las dos funciones, su rol y un secreto de **Secrets Manager**
-(`vqueue/connector`) donde queda tu clave. La clave **no viaja dentro de ningún
-zip**: los zips de la release son idénticos para todos los clientes.
+The stack creates the two functions, their role, and a **Secrets Manager** secret
+(`vqueue/connector`) that holds your key. The key **never travels inside a zip**:
+the release zips are identical for every customer.
 
-Cuando termina, en *Outputs* están los ARN de las dos versiones. Falta un solo
-paso, que CloudFormation no puede hacer por vos: en CloudFront, editá el behavior
-a proteger y agregá las dos asociaciones (**Viewer request** y **Viewer response**).
+When it finishes, *Outputs* lists the ARNs of the two function versions. One step
+is left that CloudFormation can't do for you: in CloudFront, edit the behavior you
+want to protect and add the two associations (**Viewer request** and **Viewer
+response**).
 
-Para rotar la clave, editá el secreto `vqueue/connector`; las funciones lo toman en
-a lo sumo 5 minutos.
+To rotate the key, edit the `vqueue/connector` secret; the functions pick it up
+within 5 minutes.
 
-### B) Descargando los zips
+### B) Downloading the zips
 
-Bajá `viewer-request.zip` y `viewer-response.zip` de la última release (vienen sin
-configurar), o armalos vos con tus datos:
+Download `viewer-request.zip` and `viewer-response.zip` from the latest release
+(they ship unconfigured), or build them yourself with your own values:
 
 ```bash
 npm install
-npm run build -- --client <subdominio> --private-key <private_key>
+npm run build -- --client <subdomain> --private-key <private_key>
 ```
 
-Con ese build la config viaja dentro del bundle y quedan
-`dist/viewer-request.zip` y `dist/viewer-response.zip`. El build empaqueta con el
-`zip` del sistema (viene en macOS y Linux; en Windows, desde WSL o Git Bash).
+With that build the config is embedded in the bundle, and you get
+`dist/viewer-request.zip` and `dist/viewer-response.zip`. The build packages with
+the system `zip` (available on macOS and Linux; on Windows use WSL or Git Bash).
 
-Después, en AWS:
+Then, in AWS:
 
-1. Crear dos funciones Lambda en **us-east-1** (Lambda@Edge solo se despliega
-   desde ahí), runtime Node.js 22, y subir un zip en cada una.
-2. Publicar una versión de cada función (Lambda@Edge no acepta `$LATEST`).
-3. En la distribución de CloudFront, en el behavior a proteger, asociar:
-   - **Viewer request** → la función viewer-request
-   - **Viewer response** → la función viewer-response
-4. **No** meter las cookies `vq_pass_*` / `vq_target_*` en la cache key del
-   behavior. Las funciones viewer las ven siempre, sin importar la política de
-   cache; incluirlas haría que cada visitante (su pase es único) fragmente el
-   cache de CloudFront y nada se sirva cacheado. El origin tampoco las necesita.
+1. Create two Lambda functions in **us-east-1** (Lambda@Edge can only be deployed
+   from there), Node.js 22 runtime, and upload one zip to each.
+2. Publish a version of each function (Lambda@Edge doesn't accept `$LATEST`).
+3. In your CloudFront distribution, on the behavior to protect, attach:
+   - **Viewer request** → the viewer-request function
+   - **Viewer response** → the viewer-response function
+4. **Do not** add the `vq_pass_*` / `vq_target_*` cookies to the behavior's cache
+   key. Viewer functions always see them, regardless of the cache policy; adding
+   them would make every visitor (each pass is unique) fragment the CloudFront
+   cache so nothing gets served from cache. Your origin doesn't need them either.
 
-### Sobre la clave
+### About the key
 
-Lambda@Edge **no soporta variables de entorno**. Por eso la config viene de uno de
-dos lugares: del secreto de Secrets Manager (camino A) o horneada en el bundle
-(camino B). En el camino B el build la inyecta en memoria: `src/generated-config.js`
-queda versionado solo con placeholders y la `private_key` nunca toca el árbol
-fuente. Igual, tratá esos zips como material sensible.
+Lambda@Edge **doesn't support environment variables**. So the config comes from one
+of two places: the Secrets Manager secret (path A) or embedded in the bundle (path
+B). In path B the build injects it in memory: `src/generated-config.js` is committed
+with placeholders only, and the `private_key` never touches the source tree. Still,
+treat those zips as sensitive material.
 
-Si no hay config válida de ninguno de los dos lados (secreto inexistente, sin
-permiso, clave vacía), el conector arranca en fail-open: deja pasar todo y lo
-informa en los logs, en vez de encolar con datos inventados.
+If there is no valid config from either place (missing secret, no permission, empty
+key), the connector starts in fail-open mode: it lets everything through and says so
+in the logs, instead of queueing with made-up data.
 
-### Borrar el stack
+### Deleting the stack
 
-Una función Lambda@Edge no se puede borrar mientras CloudFront la tenga asociada, y
-las réplicas tardan un rato en liberarse. Primero quitá las asociaciones del
-behavior, esperá a que la distribución termine de desplegar, y recién ahí borrá el
-stack. El secreto queda programado para borrarse y su nombre no se puede reusar
-durante ese período.
+A Lambda@Edge function can't be deleted while CloudFront has it attached, and its
+replicas take a while to be released. First remove the associations from the
+behavior, wait for the distribution to finish deploying, and only then delete the
+stack. The secret is scheduled for deletion, and its name can't be reused during that
+period.
 
-## Por qué dos funciones
+## Why two functions
 
-`viewer-request` puede devolver una respuesta propia (el 302 a la cola), pero **no
-puede agregarle una cookie a una respuesta que viene del origin**. La renovación
-deslizante necesita eso, y por eso existe `viewer-response`.
+`viewer-request` can return its own response (the 302 to the queue), but it **can't
+add a cookie to a response that comes from the origin**. Sliding renewal needs
+exactly that, which is why `viewer-response` exists.
 
-El puente entre ambas es un header interno (`x-vq-renew`) que viewer-request
-agrega al request. Contrapartida conocida: ese header viaja al origin. Si el
-visitante lo manda él mismo, viewer-request lo descarta antes de decidir nada:
-nadie puede pedirle a viewer-response la cookie que quiera.
+The bridge between them is an internal header (`x-vq-renew`) that viewer-request
+adds to the request. Known trade-off: that header travels to the origin. If a
+visitor sends it themselves, viewer-request discards it before deciding anything:
+nobody can ask viewer-response to set an arbitrary cookie.
 
-## Rendimiento y límites de Lambda@Edge
+## Performance and Lambda@Edge limits
 
-Un viewer-request tiene **5 s de timeout y 128 MB**, y si se pasa CloudFront le
-devuelve un 503 al visitante. Medido en una función real:
+A viewer-request function has a **5 s timeout and 128 MB**, and if it exceeds the
+timeout CloudFront returns a 503 to the visitor. Measured on a real function:
 
-- **Contenedor frío:** ~2.5 s (la primera llamada de red de un contenedor nuevo
-  tarda ~2 s; después de eso, 100-400 ms por llamada).
-- **Contenedor caliente:** 10-20 ms.
+- **Cold container:** ~2.5 s (the first network call of a new container takes ~2 s;
+  after that, 100–400 ms per call).
+- **Warm container:** 10–20 ms.
 
-Por eso el conector tiene un presupuesto total de 4 s: si algo se cuelga (el
-secreto, los settings), suelta al visitante en vez de dejar que expire el timeout.
-Y por eso lee el secreto con una llamada firmada a mano y no con el SDK de AWS, cuyo
-solo import tarda ~2.5 s a 128 MB.
+That's why the connector has a total budget of 4 s: if something hangs (the secret,
+the settings), it lets the visitor through instead of letting the timeout expire.
+And that's why it reads the secret with a hand-signed request instead of the AWS SDK,
+whose import alone takes ~2.5 s at 128 MB.
 
-## Contratos con VQueue
+## Contracts with VirtualQueue
 
-| Qué | Dónde | Autenticación |
+| What | Where | Authentication |
 |---|---|---|
-| ACLs + URL de cola | `GET https://<admin>/api/v1/adapter/<client>/settings` | **Ninguna** (público, cacheable) |
-| Canje del token | `GET <queue_url>/api/v1/queue/verify?token=` | Ninguna |
-| Pase | cookie `vq_pass_<event_id>` | HMAC-SHA256 con `private_key`, offline |
+| ACLs + queue URL | `GET https://<admin>/api/v1/adapter/<client>/settings` | **None** (public, cacheable) |
+| Token exchange | `GET <queue_url>/api/v1/queue/verify?token=` | None |
+| Pass | `vq_pass_<event_id>` cookie | HMAC-SHA256 with `private_key`, offline |
 
-El conector usa el endpoint **público** de settings, no `/api/v1/edge/config/`:
-ese segundo es interno de la plataforma y requiere un token que no se entrega a
-clientes.
+The connector uses the **public** settings endpoint, not `/api/v1/edge/config/`:
+the latter is internal to the platform and requires a token that is not given to
+customers.
 
-El formato del pase es `VQueue.Lines.QueuePass`:
-`base64url(json) "." base64url(hmac_sha256(private_key, base64url(json)))`, sin
-padding, payload `{t, e, iat, exp}`. `core/test/pass.test.js` incluye un vector
-firmado por la implementación real de VQueue: si alguno de los dos lados cambia el
-formato, ese test se cae.
+The pass format is `base64url(json) "." base64url(hmac_sha256(private_key,
+base64url(json)))`, unpadded, with payload `{t, e, iat, exp}`.
+`core/test/pass.test.js` includes a vector signed by the real VirtualQueue
+implementation: if either side changes the format, that test fails.
 
 ## Tests
 
@@ -150,17 +152,17 @@ formato, ese test se cae.
 npm test
 ```
 
-## Limitaciones conocidas
+## Known limitations
 
-- **El pase no está atado al visitante.** El payload de `QueuePass` no lleva IP ni
-  User-Agent, así que es transferible entre visitantes de la misma compañía. Es un
-  bearer credential: quien tiene la cookie, pasa.
-- **El token de cola es de un solo uso**, con una ventana de gracia de 60s del
-  lado de la API: si el canje falla justo después de marcarlo (timeout, loop de
-  redirects en la CDN), el reintento inmediato vuelve a emitir el mismo pase.
-  Pasada la ventana, el visitante tiene que hacer la fila de nuevo.
-- **Solo un UUID es token de cola.** `?token=` y `?vq_token=` se reclaman
-  únicamente con forma de UUID (es el id de la línea), igual que el JS adapter.
-  Un `?token=` propio del sitio nunca cuesta un round trip a VQueue.
-- **Sin protección automática.** Este conector no tiene sensores de carga; la
-  activación es por regla (`enabled`).
+- **The pass isn't bound to the visitor.** The `QueuePass` payload carries no IP or
+  User-Agent, so it can be passed between visitors of the same company. It is a
+  bearer credential: whoever holds the cookie gets in.
+- **The queue token is single-use**, with a 60 s grace window on the API side: if the
+  exchange fails right after the token is marked (timeout, redirect loop in the CDN),
+  an immediate retry gets the same pass again. After the window, the visitor has to
+  go through the queue again.
+- **Only a UUID is a queue token.** `?token=` and `?vq_token=` are claimed only when
+  they look like a UUID (it's the line id), like the JS adapter. Your site's own
+  `?token=` never costs a round trip to VirtualQueue.
+- **No automatic protection.** This connector has no load sensors; activation is
+  per rule (`enabled`).

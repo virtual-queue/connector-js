@@ -1,49 +1,52 @@
-# VirtualQueue — conectores JavaScript
+# VirtualQueue — JavaScript connectors
 
-Protección de sala de espera que **instalás en tu propia infraestructura**. Los
-visitantes que llegan a una URL protegida se redirigen a la cola, y vuelven con un
-pase firmado que se verifica offline con la `private_key` de tu compañía.
+Waiting-room protection that you **install in your own infrastructure**. Visitors
+who hit a protected URL are redirected to the queue, and come back with a signed
+pass that is verified offline with your company's `private_key`.
 
-| Paquete | Para qué | Guía |
+| Package | Use it for | Guide |
 |---|---|---|
-| [`aws-lambda-edge`](aws-lambda-edge) | CloudFront (Lambda@Edge). Frena el pico antes de que llegue a tu servidor. | [README](aws-lambda-edge/README.md) |
-| [`node`](node) | Apps Node (Express, Fastify, `http`). Corre dentro de tu backend. | [README](node/README.md) |
-| [`core`](core) | Lógica compartida. No se instala solo. | — |
+| [`aws-lambda-edge`](aws-lambda-edge) | CloudFront (Lambda@Edge). Stops the traffic spike before it reaches your servers. | [README](aws-lambda-edge/README.md) |
+| [`node`](node) | Node apps (Express, Fastify, plain `http`). Runs inside your backend. | [README](node/README.md) |
+| [`core`](core) | Shared logic. Not installed on its own. | — |
 
-Otros lenguajes: [PHP](https://github.com/virtual-queue/connector-php) ·
+Other platforms: [PHP](https://github.com/virtual-queue/connector-php) ·
 [.NET](https://github.com/virtual-queue/connector-dotnet) ·
 [Cloudflare](https://github.com/virtual-queue/edge)
 
-## Instalar el conector de CloudFront
+## Install the CloudFront connector
 
-Un click abre CloudFormation con todo cargado (región `us-east-1`):
+One click opens CloudFormation with everything pre-filled (region `us-east-1`):
 
-**[Launch Stack](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/new?stackName=vqueue-connector&templateURL=https%3A%2F%2Fvirtual-queue-connector-releases.s3.amazonaws.com%2Freleases%2Flatest%2Ftemplate.yaml)**
+[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/new?stackName=vqueue-connector&templateURL=https%3A%2F%2Fvirtual-queue-connector-releases.s3.amazonaws.com%2Freleases%2Flatest%2Ftemplate.yaml)
 
-Te pide tu subdominio y tu `private_key`, que quedan en un secreto de tu cuenta de
-AWS (nunca dentro de un zip). Después asociás las dos funciones a tu distribución de
-CloudFront. Detalle completo en la [guía](aws-lambda-edge/README.md).
+It asks for your subdomain and your `private_key`, which are stored in a secret in
+your own AWS account (never inside a zip). Then you attach the two functions to
+your CloudFront distribution. See the [full guide](aws-lambda-edge/README.md).
 
-## Cómo decide
+## How it decides
 
-1. Assets, `/api/`, WebSockets y métodos distintos de GET/HEAD pasan sin tocar red.
-2. Con `?vq_token=` canjea el token contra la API, emite la cookie `vq_pass_<evento>`
-   y vuelve a donde el visitante quería ir.
-3. Busca la regla que matchea la URL (por prioridad) y, si pide cola, verifica el
-   pase de la cookie. Sin pase válido, redirige a la sala de espera.
-4. Mientras el visitante navega, el pase se renueva.
+1. Assets, `/api/`, WebSockets, and any method other than GET/HEAD pass through
+   without touching the network.
+2. With `?vq_token=` it exchanges the token with the API, issues the
+   `vq_pass_<event>` cookie, and sends the visitor back to where they were going.
+3. It finds the rule that matches the URL (by priority) and, if the rule requires
+   the queue, verifies the pass cookie. Without a valid pass, it redirects to the
+   waiting room.
+4. While the visitor keeps browsing, the pass is renewed.
 
-**Todo falla abierto.** Sin settings, sin API o con config incompleta, el visitante
-pasa: un conector que rompe tu sitio es peor que uno que no encola.
+**Everything fails open.** With no settings, no API, or an incomplete config, the
+visitor gets through: a connector that breaks your site is worse than one that
+doesn't queue.
 
-## Desarrollo
+## Development
 
 ```bash
 npm ci
 npm test
 ```
 
-El pase lo emite VQueue: `base64url(json) "." base64url(hmac_sha256(private_key,
-base64url(json)))`. Los tests de `core` incluyen un vector firmado por la
-implementación real, el mismo que usan los SDK de PHP y .NET, así que si un formato
-cambia en cualquier lado, un test se cae.
+The pass is issued by VirtualQueue: `base64url(json) "." base64url(hmac_sha256(private_key,
+base64url(json)))`. The `core` tests include a vector signed by the real
+implementation, the same one used by the PHP and .NET SDKs, so if the format
+changes anywhere, a test fails.

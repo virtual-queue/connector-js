@@ -1,12 +1,12 @@
 # @vqueue/connector-node
 
-Protección de cola **dentro de la app del cliente**. Para quien no está detrás de
-nuestro edge ni de CloudFront, pero sí puede tocar su backend.
+Queue protection **inside your own app**. For sites that are not behind our edge or
+CloudFront, but can modify their backend.
 
-Es el equivalente server-side del JS adapter: el visitante no puede saltearla
-desactivando JavaScript.
+It is the server-side equivalent of the JS adapter: a visitor can't bypass it by
+disabling JavaScript.
 
-## Uso
+## Usage
 
 ```js
 import express from "express";
@@ -15,14 +15,14 @@ import { createQueueGuard } from "@vqueue/connector-node";
 const app = express();
 
 const guard = createQueueGuard({
-  client: "orome",                            // subdominio de la compañía
-  privateKey: process.env.VQUEUE_PRIVATE_KEY, // nunca hardcodeada
+  client: "orome",                            // your company subdomain
+  privateKey: process.env.VQUEUE_PRIVATE_KEY, // never hardcode it
 });
 
-// Protege todo lo que matchee una ACL con acción redirect_to_queue.
+// Protects everything that matches an ACL with the redirect_to_queue action.
 app.use(guard.express());
 
-app.get("/shop/entradas", (req, res) => res.send("entradas"));
+app.get("/shop/tickets", (req, res) => res.send("tickets"));
 ```
 
 Fastify:
@@ -31,59 +31,61 @@ Fastify:
 fastify.addHook("onRequest", guard.fastify());
 ```
 
-Cualquier otro framework:
+Any other framework:
 
 ```js
 const decision = await guard.check({ host, path, query, cookies, method, isWebsocket });
-if (guard.apply(decision, res)) return; // ya respondió (302 a la cola)
+if (guard.apply(decision, res)) return; // already responded (302 to the queue)
 ```
 
-## Configuración
+## Configuration
 
-| Opción | Default | Qué es |
+| Option | Default | What it is |
 |---|---|---|
-| `client` | `VQUEUE_CLIENT` | Subdominio de la compañía en VQueue |
-| `privateKey` | `VQUEUE_PRIVATE_KEY` | `private_key` de la compañía; verifica el pase offline |
-| `adminHost` | `clients.virtual-queue.com` | De dónde bajar las ACLs |
-| `secureCookies` | `true` | Poner en `false` solo para desarrollo en `http://localhost` |
-| `debug` | `false` | Logs verbosos (son por request) |
+| `client` | `VQUEUE_CLIENT` | Your company subdomain in VirtualQueue |
+| `privateKey` | `VQUEUE_PRIVATE_KEY` | Your company `private_key`; verifies the pass offline |
+| `adminHost` | `clients.virtual-queue.com` | Where to download the ACLs from |
+| `secureCookies` | `true` | Set to `false` only for development on `http://localhost` |
+| `debug` | `false` | Verbose logs (per request) |
 
-A diferencia del conector de Lambda@Edge, acá **hay variables de entorno**: la
-`private_key` no se hornea en ningún bundle.
+Unlike the Lambda@Edge connector, **environment variables are available here**, so
+the `private_key` is never baked into a bundle.
 
-## Qué hace, en orden
+## What it does, in order
 
-1. **Bypass barato** — assets, `/api/`, WebSockets y métodos que no son GET/HEAD
-   pasan sin tocar red. Un 302 sobre un POST perdería el body del checkout.
-2. **Vuelta de la cola** — con `?vq_token=` canjea contra `/api/v1/queue/verify`,
-   emite la cookie `vq_pass_<event_id>` y vuelve al destino original. Si el token
-   no es de la cola, el request sigue el flujo normal: un `?token=` propio del
-   sitio nunca se secuestra.
-3. **ACLs** — baja las reglas (cacheadas en memoria del proceso) y aplica la que
-   matchee, por prioridad, primera gana.
-4. **Pase** — verifica la firma HMAC **offline** con la `private_key`. No llama a
-   VQueue en cada request.
-5. **Renovación deslizante** — mientras el visitante navegue, el pase se extiende.
+1. **Cheap bypass** — assets, `/api/`, WebSockets, and methods other than GET/HEAD
+   pass through without touching the network. A 302 on a POST would lose the
+   checkout body.
+2. **Return from the queue** — with `?vq_token=` it exchanges the token with
+   `/api/v1/queue/verify`, issues the `vq_pass_<event_id>` cookie, and returns to
+   the original destination. If the token isn't a queue token, the request
+   continues normally: your site's own `?token=` parameters are never hijacked.
+3. **ACLs** — downloads the rules (cached in process memory) and applies the
+   matching one: by priority, first match wins.
+4. **Pass** — verifies the HMAC signature **offline** with the `private_key`. It
+   doesn't call VirtualQueue on every request.
+5. **Sliding renewal** — while the visitor keeps browsing, the pass is extended.
 
-Todo falla abierto: sin settings, sin API o con config incompleta, el visitante
-pasa. Un SDK que tumba el sitio del cliente es peor que uno que no encola.
+Everything fails open: with no settings, no API, or an incomplete config, the
+visitor gets through. An SDK that takes down your site is worse than one that
+doesn't queue.
 
-## Ventaja sobre Lambda@Edge
+## Advantage over Lambda@Edge
 
-La renovación deslizante se resuelve en una sola pasada. Lambda@Edge necesita una
-segunda función (`viewer-response`) porque desde `viewer-request` no se puede
-tocar una respuesta que todavía no existe.
+Sliding renewal happens in a single pass. Lambda@Edge needs a second function
+(`viewer-response`) because a `viewer-request` function can't touch a response that
+doesn't exist yet.
 
-## Limitaciones
+## Limitations
 
-Las mismas del conector de AWS, porque comparten el core:
+The same as the AWS connector, since they share the core:
 
-- **El pase no está atado al visitante** — el payload de `QueuePass` no lleva IP
-  ni User-Agent, así que es transferible dentro de la misma compañía. Es un
-  bearer credential: quien tiene la cookie, pasa.
-- **Corre dentro de tu app**, así que no te protege de la avalancha: el request
-  igual llega a tu server. Para frenar el pico *antes* hace falta el edge
-  (Workers o Lambda@Edge).
+- **The pass isn't bound to the visitor.** The `QueuePass` payload carries no IP or
+  User-Agent, so it can be passed between visitors of the same company. It is a
+  bearer credential: whoever holds the cookie gets in.
+- **It runs inside your app**, so it doesn't protect you from the traffic spike: the
+  request still reaches your server. To stop the peak *before* it arrives you need
+  the edge (Workers or Lambda@Edge).
 
 ## Tests
 
