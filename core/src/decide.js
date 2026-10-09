@@ -7,7 +7,7 @@
 // conector que rompe el sitio del cliente es peor que uno que no encola.
 
 import { ASSET_REGEX, findMatch } from "./acl.js";
-import { hasValidPassFor, passCookieName } from "./pass.js";
+import { hasValidPassFor, passCookieName, verifyPass } from "./pass.js";
 
 export const TARGET_COOKIE_PREFIX = "vq_target_";
 // El destino se guarda solo para cruzar la ida a la cola; no necesita durar más.
@@ -18,6 +18,44 @@ const TARGET_TTL_SECONDS = 3600;
 // link) costaría un round trip a /queue/verify por página, y cualquiera podría
 // hacer que el server del cliente golpee la API de VQueue a voluntad.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Si VQueue emite pases que NO validan con la privateKey configurada (clave mal
+// cargada, placeholder sin cambiar, o rotada en el panel antes que acá), cada
+// visitante entraría en un loop: cola → canje OK → cookie que no valida → cola.
+// Eso es fail-closed. Cuando se detecta, se deja de encolar por un rato y se avisa
+// fuerte en los logs. Estado por proceso/isolate, igual que el cache de settings.
+const KEY_MISMATCH_TTL_MS = 5 * 60_000;
+const keyMismatchUntil = new Map(); // privateKey -> epoch ms
+
+function markKeyMismatch(privateKey) {
+    keyMismatchUntil.set(privateKey, Date.now() + KEY_MISMATCH_TTL_MS);
+}
+
+function keyMismatchActive(privateKey) {
+    const until = keyMismatchUntil.get(privateKey);
+    if (!until) return false;
+    if (Date.now() < until) return true;
+    keyMismatchUntil.delete(privateKey);
+    return false;
+}
+
+// Solo para tests.
+export function _resetKeyMismatch() {
+    keyMismatchUntil.clear();
+}
+
+// Path con el que se evalúan bypass y ACLs. Se decodifica (un origen decodifica
+// "/%73hop" como "/shop", así que la regla tiene que verlo igual) y se sacan los
+// parámetros de segmento (";jsessionid=...", que Tomcat/Spring ignoran): si no,
+// "/checkout;x.css" pasaría como asset. El path ORIGINAL se usa para volver.
+export function matchPath(path) {
+    const withoutParams = String(path || "/").replace(/;[^/]*/g, "");
+    try {
+        return decodeURIComponent(withoutParams);
+    } catch {
+        return withoutParams;
+    }
+}
 
 export function targetCookieName(eventId) {
     return `${TARGET_COOKIE_PREFIX}${eventId}`;
@@ -39,7 +77,7 @@ export function safeTarget(raw) {
     // "//host" es una URL protocol-relative, y los browsers tratan "/\host"
     // exactamente igual.
     if (raw.startsWith("//") || raw.startsWith("/\\")) return null;
-    if (/[\r\n]/.test(raw)) return null;
+    if (/[\u0000-\u001f\u007f]/.test(raw)) return null;
     return raw;
 }
 
@@ -58,7 +96,11 @@ function stripQueueToken(query) {
 
 /**
  * Canjea el token de la cola por un pase.
- * Devuelve `{eventId, pass}`, o null si no era un token de cola válido.
+ * Devuelve `{eventId, pass}`, null si VQueue dijo que no es un token de cola
+ * válido, o `{unavailable: true}` si no se pudo preguntar (red, timeout, 5xx,
+ * redirect, respuesta ilegible). Esa diferencia decide entre seguir el flujo
+ * normal y dejar pasar: un problema nuestro no puede devolver a la cola a
+ * alguien que ya la hizo.
  */
 export async function exchangeToken(token, settings, { logger, fetchImpl = fetch, verifyTimeoutMs = 2000 } = {}) {
     const url = `${settings.queueUrl.replace(/\/+$/, "")}/api/v1/queue/verify?token=${encodeURIComponent(token)}`;
@@ -75,12 +117,16 @@ export async function exchangeToken(token, settings, { logger, fetchImpl = fetch
         });
     } catch (err) {
         logger?.warn?.(`[verify] fetch failed: ${err?.message || err}`);
-        return null;
+        return { unavailable: true };
     }
 
     if (resp.status >= 300 && resp.status < 400) {
         logger?.error?.(`[verify] redirect (routing mal configurado): ${resp.headers.get("location")}`);
-        return null;
+        return { unavailable: true };
+    }
+    if (resp.status >= 500) {
+        logger?.warn?.(`[verify] VQueue respondió ${resp.status}`);
+        return { unavailable: true };
     }
     if (!resp.ok) {
         logger?.log?.(`[verify] rejected with status ${resp.status}`);
@@ -92,7 +138,7 @@ export async function exchangeToken(token, settings, { logger, fetchImpl = fetch
         body = await resp.json();
     } catch (err) {
         logger?.warn?.(`[verify] invalid json: ${err?.message || err}`);
-        return null;
+        return { unavailable: true };
     }
 
     const data = body?.data;
@@ -123,7 +169,9 @@ export async function exchangeToken(token, settings, { logger, fetchImpl = fetch
 export async function decide(req, config, deps) {
     const { getSettings, logger } = deps;
 
-    if (isBypassPath(req.path, req.method, req.isWebsocket)) {
+    const path = matchPath(req.path);
+
+    if (isBypassPath(path, req.method, req.isWebsocket)) {
         return { type: "bypass" };
     }
 
@@ -140,7 +188,33 @@ export async function decide(req, config, deps) {
     if (token) {
         const exchanged = await exchangeToken(token, settings, deps);
 
+        if (exchanged?.unavailable) {
+            // Hizo la fila y no pudimos confirmarlo por un problema de red o de
+            // VQueue: pasa. Mandarlo a la cola de nuevo le haría perder el lugar.
+            logger?.warn?.(`[decide] verify no disponible → fail-open`);
+            return { type: "allow" };
+        }
+
         if (exchanged) {
+            // Volver a donde el visitante quería ir, no a donde la cola lo soltó.
+            // El fallback (el path actual) también pasa por safeTarget: sin eso,
+            // "//evil.com?vq_token=..." redirigiría afuera.
+            const stored = safeTarget(req.cookies[targetCookieName(exchanged.eventId)]);
+            const location = stored || safeTarget(`${req.path}${stripQueueToken(req.query)}`) || "/";
+
+            if (verifyPass(exchanged.pass, config.privateKey).reason === "bad_signature") {
+                logger?.error?.(
+                    `[decide] el pase de VQueue no valida con la privateKey configurada ` +
+                    `(clave incorrecta, sin cambiar o rotada) → se deja de encolar por ${KEY_MISMATCH_TTL_MS / 60000} min`,
+                );
+                markKeyMismatch(config.privateKey);
+                return {
+                    type: "redirect",
+                    location,
+                    cookies: [{ name: targetCookieName(exchanged.eventId), value: "", maxAge: 0 }],
+                };
+            }
+
             const cookies = [
                 {
                     name: passCookieName(exchanged.eventId),
@@ -150,10 +224,6 @@ export async function decide(req, config, deps) {
                 // El destino ya se consumió.
                 { name: targetCookieName(exchanged.eventId), value: "", maxAge: 0 },
             ];
-
-            // Volver a donde el visitante quería ir, no a donde la cola lo soltó.
-            const stored = safeTarget(req.cookies[targetCookieName(exchanged.eventId)]);
-            const location = stored || `${req.path}${stripQueueToken(req.query)}`;
 
             return { type: "redirect", location, cookies };
         }
@@ -167,7 +237,7 @@ export async function decide(req, config, deps) {
     //-----------------------------------------
     // 2) ACLs
     //-----------------------------------------
-    const rule = findMatch(settings.rules, req.path);
+    const rule = findMatch(settings.rules, path);
     if (!rule) return { type: "allow" };
     if (rule.action === "bypass") return { type: "allow" };
     if (rule.action !== "redirect_to_queue") return { type: "allow" };
@@ -197,17 +267,26 @@ export async function decide(req, config, deps) {
         };
     }
 
+    if (keyMismatchActive(config.privateKey)) {
+        logger?.warn?.(`[decide] privateKey no coincide con la de VQueue → fail-open (${eventId})`);
+        return { type: "allow" };
+    }
+
     logger?.log?.(`[decide] sin pase para ${eventId} (${pass.reason}) → cola`);
 
     //-----------------------------------------
     // 4) A la sala de espera
     //-----------------------------------------
+    // El destino se guarda solo en navegaciones: un fetch/XHR a una ruta protegida
+    // pisaría la página que el visitante pidió. Sin el header (navegadores viejos,
+    // otros adaptadores) se asume navegación, que es el comportamiento anterior.
     const target = `${req.path}${req.query.toString() ? `?${req.query}` : ""}`;
+    const cookies = req.isNavigation === false
+        ? []
+        : [{ name: targetCookieName(eventId), value: target, maxAge: TARGET_TTL_SECONDS }];
     return {
         type: "redirect",
         location: `${settings.queueUrl.replace(/\/+$/, "")}/queue/${encodeURIComponent(eventId)}`,
-        cookies: [
-            { name: targetCookieName(eventId), value: target, maxAge: TARGET_TTL_SECONDS },
-        ],
+        cookies,
     };
 }

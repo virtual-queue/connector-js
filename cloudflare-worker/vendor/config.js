@@ -8,8 +8,13 @@
 
 // Los valores concretos viven en src/generated-config.js, que escribe el build.
 
+// Valores de ejemplo que traen los instaladores (.dev.vars.example, plantillas).
+// Aceptarlos como config real encolaría a todos con una clave que nunca valida.
+const EXAMPLE_VALUES = new Set(["your-subdomain", "your-private-key"]);
+
 function unreplaced(value) {
-    return typeof value === "string" && value.startsWith("__VQ_") && value.endsWith("__");
+    if (typeof value !== "string") return false;
+    return (value.startsWith("__VQ_") && value.endsWith("__")) || EXAMPLE_VALUES.has(value.trim());
 }
 
 /**

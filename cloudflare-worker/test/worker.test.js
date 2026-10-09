@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import worker, { readConfig } from "../src/worker.js";
 import { _resetSettingsCache } from "../vendor/settings.js";
+import { _resetKeyMismatch } from "../vendor/decide.js";
 
 // Mismo pase que firma la implementación real de VQueue (vector del core): vale
 // mientras Date.now esté fijado en 1_700_000_100_000.
@@ -37,6 +38,7 @@ function req(path = "/shop/entradas", { method = "GET", cookie, headers = {} } =
 
 beforeEach(() => {
     _resetSettingsCache();
+    _resetKeyMismatch();
     origin = vi.fn(async () => new Response("origin ok", { status: 200 }));
     vi.spyOn(Date, "now").mockReturnValue(1_700_000_100_000);
     fetchMock = vi.fn(async (input, init) => {
@@ -174,7 +176,7 @@ describe("falla abierto", () => {
         expect(res.status).toBe(200);
     });
 
-    it("si el canje falla con error de red, no rompe: sigue el flujo normal", async () => {
+    it("si el canje falla con error de red, el que vuelve de la fila pasa", async () => {
         fetchMock.mockImplementation(async (input, init) => {
             const url = String(input?.url ?? input);
             if (url.includes("/adapter/")) return new Response(JSON.stringify(SETTINGS), { status: 200 });
@@ -182,7 +184,27 @@ describe("falla abierto", () => {
             return origin(input, init);
         });
         const res = await worker.fetch(req(`/shop/entradas?vq_token=${TOKEN}`), ENV);
-        expect(res.status).toBe(302); // sin pase → cola, no 500
+        expect(res.status).toBe(200); // no lo devolvemos a la cola por un problema nuestro
+    });
+
+    it("con PRIVATE_KEY de ejemplo (your-private-key) deja pasar en vez de encolar", async () => {
+        const res = await worker.fetch(req(), { ...ENV, PRIVATE_KEY: "your-private-key" });
+        expect(res.status).toBe(200);
+    });
+
+    it("con la clave equivocada no hay loop infinito de fila", async () => {
+        const wrong = { ...ENV, PRIVATE_KEY: "clave-vieja" };
+        const back = await worker.fetch(req(`/shop/entradas?vq_token=${TOKEN}`), wrong);
+        expect(back.status).toBe(302);
+        expect(back.headers.getSetCookie().some((c) => c.startsWith("vq_pass_"))).toBe(false);
+        const next = await worker.fetch(req("/shop/entradas"), wrong);
+        expect(next.status).toBe(200);
+    });
+
+    it("llama a passThroughOnException", async () => {
+        const ctx = { passThroughOnException: vi.fn() };
+        await worker.fetch(req("/blog"), ENV, ctx);
+        expect(ctx.passThroughOnException).toHaveBeenCalled();
     });
 });
 
@@ -190,5 +212,47 @@ describe("readConfig", () => {
     it("pide client y privateKey", () => {
         expect(readConfig({}).errors.length).toBeGreaterThan(0);
         expect(readConfig(ENV).errors).toEqual([]);
+    });
+});
+
+describe("endurecimiento", () => {
+    it("el path actual como destino no abre un open redirect", async () => {
+        const res = await worker.fetch(new Request(`https://shop.test//evil.com?vq_token=${TOKEN}`), ENV);
+        expect(res.status).toBe(302);
+        expect(new URL(res.headers.get("location")).host).toBe("shop.test");
+    });
+
+    it("la renovación conserva los Set-Cookie del origin", async () => {
+        origin.mockImplementation(async () => {
+            const h = new Headers();
+            h.append("Set-Cookie", "session=abc; Path=/");
+            h.append("Set-Cookie", "cart=1; Path=/");
+            return new Response("origin ok", { status: 200, headers: h });
+        });
+        const res = await worker.fetch(req("/shop/entradas", { cookie: `vq_pass_ev-42=${PASS}` }), ENV);
+        const names = res.headers.getSetCookie().map((c) => c.split("=")[0]);
+        expect(names).toEqual(expect.arrayContaining(["session", "cart", "vq_pass_ev-42"]));
+    });
+
+    it("un fetch/XHR protegido no pisa el destino guardado", async () => {
+        const res = await worker.fetch(req("/shop/stock", { headers: { "Sec-Fetch-Mode": "cors" } }), ENV);
+        expect(res.status).toBe(302);
+        expect(res.headers.get("set-cookie")).toBeNull();
+    });
+
+    it("pide cachear solo las respuestas buenas de settings", async () => {
+        await worker.fetch(req(), ENV);
+        const call = fetchMock.mock.calls.find(([u]) => String(u?.url ?? u).includes("/adapter/"));
+        expect(call[1].cf.cacheTtlByStatus).toEqual({ "200-299": 30, "300-599": 0 });
+    });
+
+    it("una ruta con %-encoding no esquiva la regla", async () => {
+        const res = await worker.fetch(req("/%73hop/entradas"), ENV);
+        expect(res.status).toBe(302);
+    });
+
+    it("CLIENT con espacios alrededor funciona", async () => {
+        const res = await worker.fetch(req(), { ...ENV, CLIENT: " orome " });
+        expect(res.status).toBe(302);
     });
 });

@@ -55,6 +55,7 @@ export function parseCookies(headers) {
 
 export function toRequest(cfRequest) {
     const upgrade = headerValue(cfRequest.headers, "upgrade");
+    const fetchMode = headerValue(cfRequest.headers, "sec-fetch-mode");
 
     return {
         host: headerValue(cfRequest.headers, "host") || "",
@@ -63,6 +64,8 @@ export function toRequest(cfRequest) {
         cookies: parseCookies(cfRequest.headers),
         method: cfRequest.method,
         isWebsocket: !!upgrade && upgrade.toLowerCase() === "websocket",
+        // Sin el header (navegadores viejos, clientes HTTP) se trata como navegación.
+        isNavigation: fetchMode ? fetchMode === "navigate" : undefined,
     };
 }
 

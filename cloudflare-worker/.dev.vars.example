@@ -1,2 +1,4 @@
-# private_key de tu compañía en VirtualQueue. Es secreto: nunca va en wrangler.jsonc.
+# Subdominio de tu compañía en VirtualQueue (el de tu URL de fila).
+CLIENT=your-subdomain
+# private_key de tu compañía en VirtualQueue. Pídela a support@virtual-queue.com.
 PRIVATE_KEY=your-private-key

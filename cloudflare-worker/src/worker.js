@@ -16,34 +16,40 @@ import { getSettings } from "../vendor/settings.js";
 import { cookieHeader, parseCookies } from "./cookies.js";
 
 const DEFAULT_ADMIN_HOST = "clients.virtual-queue.com";
-const PLACEHOLDER_CLIENT = "your-subdomain";
 
 // Presupuesto total de la decisión. Las llamadas internas ya tienen su timeout
 // (settings 1.5 s, verify 2 s); esto acota el peor caso de ambas juntas.
 const DEADLINE_MS = 3_500;
 
 // Los settings son públicos y cacheables (`public, max-age=30, s-maxage=60`).
-// Pedirle a Cloudflare que los guarde 30 s evita que cada isolate de cada
-// ubicación golpee al admin: el cache en memoria del core vive solo en un isolate.
-const settingsFetch = (url, init) => fetch(url, { ...init, cf: { cacheTtl: 30, cacheEverything: true } });
+// Se pide cachear solo las respuestas buenas: un error no se guarda. Si el admin
+// está en otra zona de Cloudflare, puede que esta preferencia no aplique (la
+// subrequest lee el cache de esa zona); el cache por isolate del core sí aplica.
+const settingsFetch = (url, init) =>
+    fetch(url, { ...init, cf: { cacheTtlByStatus: { "200-299": 30, "300-599": 0 } } });
+
+const isDebug = (env) => env?.DEBUG === true || env?.DEBUG === "true";
+
+// Una config inválida se avisa una vez por isolate, no en cada request: durante
+// un pico serían millones de líneas de log (y de facturación de logs).
+let configErrorLogged = false;
 
 export function readConfig(env) {
     const config = {
-        client: env?.CLIENT,
+        client: typeof env?.CLIENT === "string" ? env.CLIENT.trim() : env?.CLIENT,
         privateKey: env?.PRIVATE_KEY,
         adminHost: env?.ADMIN_HOST || DEFAULT_ADMIN_HOST,
-        debug: env?.DEBUG === "true",
+        debug: isDebug(env),
     };
 
-    const { ok, errors } = validateConfig(config);
-    if (config.client === PLACEHOLDER_CLIENT) {
-        errors.push("`CLIENT` sin configurar (subdominio de la compañía en VQueue)");
-    }
-    return { config, errors: ok && config.client !== PLACEHOLDER_CLIENT ? [] : errors };
+    // validateConfig rechaza vacíos y los valores de ejemplo de .dev.vars.example.
+    const { errors } = validateConfig(config);
+    return { config, errors };
 }
 
 function toRequest(request, url) {
     const upgrade = request.headers.get("upgrade");
+    const fetchMode = request.headers.get("sec-fetch-mode");
     return {
         host: url.host,
         path: url.pathname,
@@ -51,6 +57,8 @@ function toRequest(request, url) {
         cookies: parseCookies(request.headers.get("cookie")),
         method: request.method,
         isWebsocket: !!upgrade && upgrade.toLowerCase() === "websocket",
+        // Sin el header (navegadores viejos, clientes HTTP) se trata como navegación.
+        isNavigation: fetchMode ? fetchMode === "navigate" : undefined,
     };
 }
 
@@ -93,8 +101,12 @@ async function decideWithDeadline(req, config, logger) {
 }
 
 export default {
-    async fetch(request, env) {
-        const logger = buildLogger({ debug: env?.DEBUG === "true" });
+    async fetch(request, env, ctx) {
+        // Si algo en este handler lanza una excepción no capturada, Cloudflare
+        // manda el request al origin en vez de mostrar el error 1101.
+        ctx?.passThroughOnException?.();
+
+        const logger = buildLogger({ debug: isDebug(env) });
         let decision = { type: "allow" };
 
         // Solo la DECISIÓN va en el try: si el origin falla, ese error es del
@@ -102,7 +114,10 @@ export default {
         try {
             const { config, errors } = readConfig(env);
             if (errors.length > 0) {
-                logger.error?.(`[vq] config inválida, fail-open: ${errors.join("; ")}`);
+                if (!configErrorLogged) {
+                    configErrorLogged = true;
+                    console.error(`[vq] config inválida, fail-open: ${errors.join("; ")}`);
+                }
             } else {
                 const url = new URL(request.url);
                 decision = await decideWithDeadline(toRequest(request, url), config, logger);
@@ -114,7 +129,11 @@ export default {
         }
 
         if (decision.type === "redirect") {
-            return redirectResponse(decision.location, decision.cookies, request.url);
+            try {
+                return redirectResponse(decision.location, decision.cookies, request.url);
+            } catch (err) {
+                console.error(`[vq] no se pudo armar el redirect, fail-open: ${err?.stack || err}`);
+            }
         }
 
         const originResponse = await fetch(request);

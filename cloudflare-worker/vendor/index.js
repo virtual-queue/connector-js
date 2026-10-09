@@ -22,6 +22,8 @@ export {
     decide,
     exchangeToken,
     isBypassPath,
+    matchPath,
+    _resetKeyMismatch,
     queueToken,
     safeTarget,
     targetCookieName,
