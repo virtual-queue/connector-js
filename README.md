@@ -7,12 +7,12 @@ pass that is verified offline with your company's `private_key`.
 | Package | Use it for | Guide |
 |---|---|---|
 | [`aws-lambda-edge`](aws-lambda-edge) | CloudFront (Lambda@Edge). Stops the traffic spike before it reaches your servers. | [README](aws-lambda-edge/README.md) |
+| [`cloudflare-worker`](cloudflare-worker) | Cloudflare Workers. Runs in your own Cloudflare account, in front of your site. | [README](cloudflare-worker/README.md) |
 | [`node`](node) | Node apps (Express, Fastify, plain `http`). Runs inside your backend. | [README](node/README.md) |
 | [`core`](core) | Shared logic. Not installed on its own. | — |
 
 Other platforms: [PHP](https://github.com/virtual-queue/connector-php) ·
-[.NET](https://github.com/virtual-queue/connector-dotnet) ·
-[Cloudflare](https://github.com/virtual-queue/edge)
+[.NET](https://github.com/virtual-queue/connector-dotnet)
 
 ## Install the CloudFront connector
 

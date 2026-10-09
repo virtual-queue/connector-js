@@ -1,0 +1,2 @@
+# private_key de tu compañía en VirtualQueue. Es secreto: nunca va en wrangler.jsonc.
+PRIVATE_KEY=your-private-key
