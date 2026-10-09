@@ -1,0 +1,14 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "vqueue-connector",
+	"main": "src/worker.js",
+	"compatibility_date": "2026-07-01",
+	// core usa node:crypto (HMAC del pase) y Buffer.
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": { "enabled": true },
+	"vars": {
+		// Subdominio de tu compañía en VirtualQueue (el de tu URL de fila).
+		"CLIENT": "your-subdomain",
+		"DEBUG": "false"
+	}
+}
