@@ -5,10 +5,13 @@
 	"compatibility_date": "2026-07-01",
 	// core usa node:crypto (HMAC del pase) y Buffer.
 	"compatibility_flags": ["nodejs_compat"],
-	"observability": { "enabled": true },
-	"vars": {
-		// Subdominio de tu compañía en VirtualQueue (el de tu URL de fila).
-		"CLIENT": "your-subdomain",
-		"DEBUG": "false"
-	}
+	// El Worker solo tiene sentido delante de tu dominio (Workers Routes). En
+	// *.workers.dev, fetch(request) apuntaría al propio Worker.
+	"workers_dev": false,
+	"preview_urls": false,
+	// No pisar en cada deploy lo que se cargue desde el panel de Cloudflare.
+	"keep_vars": true,
+	"observability": { "enabled": true }
+	// CLIENT y PRIVATE_KEY son SECRETOS (ver .dev.vars.example): el botón de
+	// deploy los pide y sobreviven a cada build. Como `vars` se resetearían.
 }

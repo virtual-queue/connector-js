@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { decide, exchangeToken, safeTarget, targetCookieName } from "../src/decide.js";
+import { decide, exchangeToken, safeTarget, targetCookieName, matchPath, _resetKeyMismatch } from "../src/decide.js";
+import { validateConfig } from "../src/config.js";
 import { sortRules } from "../src/acl.js";
 import { passCookieName } from "../src/pass.js";
 
@@ -22,8 +23,8 @@ const SETTINGS = {
     ]),
 };
 
-function req({ path = "/shop/entradas", query = "", cookies = {}, method = "GET", isWebsocket = false } = {}) {
-    return { host: "shop.test", path, query: new URLSearchParams(query), cookies, method, isWebsocket };
+function req({ path = "/shop/entradas", query = "", cookies = {}, method = "GET", isWebsocket = false, isNavigation } = {}) {
+    return { host: "shop.test", path, query: new URLSearchParams(query), cookies, method, isWebsocket, isNavigation };
 }
 
 function deps({ settings = SETTINGS, fetchImpl } = {}) {
@@ -39,7 +40,10 @@ beforeEach(() => {
     vi.spyOn(Date, "now").mockReturnValue(1_700_000_100_000);
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+    vi.restoreAllMocks();
+    _resetKeyMismatch();
+});
 
 describe("decide — bypass barato", () => {
     it("saltea assets sin pedir settings", async () => {
@@ -191,7 +195,7 @@ describe("decide — canje del token", () => {
         expect(d.cookies.some((c) => c.name === "vq_pass_ev-42")).toBe(false);
     });
 
-    it("un verify que redirecciona no rompe el canje", async () => {
+    it("un verify que redirecciona es un problema nuestro: deja pasar", async () => {
         const fetchImpl = vi.fn(async () => new Response(null, {
             status: 302,
             headers: { location: "https://loop" },
@@ -199,16 +203,56 @@ describe("decide — canje del token", () => {
 
         const d = await decide(req({ query: `token=${TOKEN}` }), CONFIG, deps({ fetchImpl }));
 
-        // Sin pase, pero sin excepción: sigue el flujo y va a la cola.
-        expect(d.type).toBe("redirect");
+        expect(d.type).toBe("allow");
+    });
+
+    it("si VQueue responde 5xx o no responde, el que vuelve de la fila pasa", async () => {
+        for (const fetchImpl of [
+            vi.fn(async () => new Response("boom", { status: 503 })),
+            vi.fn(async () => { throw new Error("timeout"); }),
+            vi.fn(async () => new Response("<html>challenge</html>", { status: 200 })),
+        ]) {
+            const d = await decide(req({ query: `vq_token=${TOKEN}` }), CONFIG, deps({ fetchImpl }));
+            expect(d.type).toBe("allow");
+        }
+    });
+
+    it("un 4xx de verify (token ya usado) sigue el flujo normal", async () => {
+        const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ success: false }), { status: 400 }));
+        const d = await decide(req({ query: `vq_token=${TOKEN}` }), CONFIG, deps({ fetchImpl }));
         expect(d.location).toContain("/queue/ev-42");
     });
 
-    it("exchangeToken devuelve null si la red falla", async () => {
-        const fetchImpl = vi.fn(async () => { throw new Error("ECONNRESET"); });
-        const result = await exchangeToken(TOKEN, SETTINGS, { fetchImpl, logger: { warn: () => { } } });
+    it("con la privateKey equivocada no hay loop: deja de encolar y lo avisa", async () => {
+        const error = vi.fn();
+        const wrong = { ...CONFIG, privateKey: "otra-clave" };
+        const d = await decide(req({ query: `vq_token=${TOKEN}` }), wrong, { ...deps({ fetchImpl: verifyOk() }), logger: { log() { }, warn() { }, error } });
 
-        expect(result).toBeNull();
+        expect(d.type).toBe("redirect");
+        expect(d.location).toBe("/shop/entradas");
+        expect(d.cookies.some((c) => c.name === "vq_pass_ev-42")).toBe(false);
+        expect(error).toHaveBeenCalled();
+
+        // La siguiente página protegida pasa en vez de volver a la cola.
+        const next = await decide(req(), wrong, deps());
+        expect(next.type).toBe("allow");
+        // Con la clave correcta se sigue encolando normalmente.
+        expect((await decide(req(), CONFIG, deps())).type).toBe("redirect");
+    });
+
+    it("el path actual como destino tampoco abre un open redirect", async () => {
+        for (const path of ["//evil.com", "/\\evil.com"]) {
+            const d = await decide(req({ path, query: `vq_token=${TOKEN}` }), CONFIG, deps({ fetchImpl: verifyOk() }));
+            expect(d.location).toBe("/");
+        }
+    });
+
+    it("exchangeToken distingue \"no se pudo preguntar\" de \"no es un token\"", async () => {
+        const down = vi.fn(async () => { throw new Error("ECONNRESET"); });
+        expect(await exchangeToken(TOKEN, SETTINGS, { fetchImpl: down, logger: { warn: () => { } } })).toEqual({ unavailable: true });
+
+        const rejected = vi.fn(async () => new Response(JSON.stringify({ success: false }), { status: 400 }));
+        expect(await exchangeToken(TOKEN, SETTINGS, { fetchImpl: rejected, logger: { log: () => { } } })).toBeNull();
     });
 });
 
@@ -229,9 +273,55 @@ describe("safeTarget — no abrir un open redirect", () => {
         expect(safeTarget("/ok\r\nSet-Cookie: x=1")).toBeNull();
     });
 
+    it("rechaza tabs y otros caracteres de control (\"/\\t/host\" termina en \"//host\")", () => {
+        expect(safeTarget("/\t/evil.com")).toBeNull();
+        expect(safeTarget("/ok\u0000")).toBeNull();
+    });
+
     it("rechaza basura", () => {
         expect(safeTarget("")).toBeNull();
         expect(safeTarget(null)).toBeNull();
         expect(safeTarget("relativo")).toBeNull();
+    });
+});
+
+describe("matchPath — las reglas ven lo mismo que el origen", () => {
+    it("decodifica percent-encoding", () => {
+        expect(matchPath("/%73hop/entradas")).toBe("/shop/entradas");
+    });
+
+    it("saca parámetros de segmento", () => {
+        expect(matchPath("/shop/checkout;x.css")).toBe("/shop/checkout");
+        expect(matchPath("/shop;jsessionid=abc/entradas")).toBe("/shop/entradas");
+    });
+
+    it("un encoding inválido no rompe", () => {
+        expect(matchPath("/shop/%E0%A4%A")).toBe("/shop/%E0%A4%A");
+    });
+
+    it("una regla sobre /shop atrapa /%73hop y no deja pasar /checkout;x.css como asset", async () => {
+        expect((await decide(req({ path: "/%73hop/entradas" }), CONFIG, deps())).type).toBe("redirect");
+        expect((await decide(req({ path: "/shop/checkout;x.css" }), CONFIG, deps())).type).toBe("redirect");
+    });
+});
+
+describe("destino guardado solo en navegaciones", () => {
+    it("un fetch/XHR a una ruta protegida no pisa el destino", async () => {
+        const d = await decide(req({ isNavigation: false }), CONFIG, deps());
+        expect(d.type).toBe("redirect");
+        expect(d.cookies).toEqual([]);
+    });
+
+    it("sin el dato (otros adaptadores) se guarda como antes", async () => {
+        const d = await decide(req(), CONFIG, deps());
+        expect(d.cookies.some((c) => c.name === targetCookieName("ev-42"))).toBe(true);
+    });
+});
+
+describe("validateConfig — valores de ejemplo", () => {
+    it("rechaza los placeholders de los instaladores", () => {
+        expect(validateConfig({ client: "your-subdomain", privateKey: SECRET, adminHost: "a" }).ok).toBe(false);
+        expect(validateConfig({ client: "orome", privateKey: "your-private-key", adminHost: "a" }).ok).toBe(false);
+        expect(validateConfig({ client: "orome", privateKey: SECRET, adminHost: "a" }).ok).toBe(true);
     });
 });
