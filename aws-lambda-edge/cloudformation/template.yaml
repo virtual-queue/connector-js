@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   VQueue connector for CloudFront (Lambda@Edge). Creates the two functions, their
-  role, and a Secrets Manager secret holding your subdomain and private key.
+  role, and a Secrets Manager secret holding your subdomain, private key and
+  (optionally) your traffic counter token for automatic activation.
   After the stack is created, associate the two function versions listed in
   Outputs with a CloudFront behavior (viewer-request and viewer-response).
 
@@ -33,6 +34,17 @@ Parameters:
     Type: String
     Default: clients.virtual-queue.com
     Description: Host that serves your ACL settings. Leave the default unless support tells you otherwise.
+  TcToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Your "Traffic counter token" (company settings in VQueue). Enables automatic activation for rules with a threshold or max load. Leave empty if all your rules are manual.
+    AllowedPattern: "^[A-Za-z0-9_.-]{0,512}$"
+    ConstraintDescription: The token contains only letters, digits and _ . -
+  TcUrl:
+    Type: String
+    Default: https://tc.virtual-queue.com
+    Description: VQueue traffic counter endpoint. Leave the default unless support tells you otherwise.
   ReleaseVersion:
     Type: String
     Default: __VERSION__
@@ -49,9 +61,9 @@ Resources:
       # Fixed name: the function bundle cannot be parameterized per install, so it
       # always reads this secret.
       Name: vqueue/connector
-      Description: VQueue connector configuration (subdomain and private key).
+      Description: VQueue connector configuration (subdomain, private key, traffic counter token).
       SecretString:
-        Fn::Sub: '{"client":"${Client}","privateKey":"${PrivateKey}","adminHost":"${AdminHost}"}'
+        Fn::Sub: '{"client":"${Client}","privateKey":"${PrivateKey}","adminHost":"${AdminHost}","tcToken":"${TcToken}","tcUrl":"${TcUrl}"}'
 
   ConnectorRole:
     Type: AWS::IAM::Role
@@ -147,4 +159,4 @@ Outputs:
       Ref: ViewerResponseVersion
   NextStep:
     Description: What is left to do.
-    Value: In CloudFront, edit the behavior to protect, and add the two ARNs above as Function associations (Viewer request, Viewer response).
+    Value: In CloudFront, edit the behavior to protect, and add the two ARNs above as Function associations (Viewer request, Viewer response). Rules without thresholds queue every visitor; rules with a threshold or max load activate on their own when TcToken is set.

@@ -12,6 +12,10 @@ export const CONFIG = {
     client: "__VQ_CLIENT__",
     privateKey: "__VQ_PRIVATE_KEY__",
     adminHost: "clients.virtual-queue.com",
+    // Traffic counter: con token, las reglas con umbrales activan solas.
+    tcUrl: "https://tc.virtual-queue.com",
+    tcToken: "__VQ_TC_TOKEN__",
+    tcTimeoutMs: 800,
     settingsTtlMs: 30000,
     settingsTimeoutMs: 1500,
     verifyTimeoutMs: 2000,

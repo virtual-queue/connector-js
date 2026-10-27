@@ -5,7 +5,9 @@
 // espera. A diferencia de Lambda@Edge, un Worker ve la respuesta del origin, así
 // que la renovación deslizante del pase se hace acá mismo, sin segunda función.
 //
-// Solo protección MANUAL: aplica las reglas de acceso; no mide tráfico.
+// Solo protección MANUAL: aplica las reglas de acceso; no mide tráfico. Una regla
+// con umbrales encola siempre desde este Worker (el core avisa en los logs); la
+// activación automática en Cloudflare la hace el Worker gestionado de VQueue.
 // Todo falla abierto: sin config, sin API o con un error cualquiera, el visitante
 // pasa. Un conector que rompe el sitio del cliente es peor que uno que no encola.
 
@@ -52,6 +54,7 @@ function toRequest(request, url) {
     const fetchMode = request.headers.get("sec-fetch-mode");
     return {
         host: url.host,
+        clientKey: `${request.headers.get("cf-connecting-ip") || ""}|${request.headers.get("user-agent") || ""}`,
         path: url.pathname,
         query: url.searchParams,
         cookies: parseCookies(request.headers.get("cookie")),

@@ -59,6 +59,9 @@ export function toRequest(cfRequest) {
 
     return {
         host: headerValue(cfRequest.headers, "host") || "",
+        // Clave de dedupe del sensor (misma forma que el Worker: IP|User-Agent).
+        // Nunca sale del contenedor: al TC viajan totales, no claves.
+        clientKey: `${cfRequest.clientIp || ""}|${headerValue(cfRequest.headers, "user-agent") || ""}`,
         path: cfRequest.uri || "/",
         query: new URLSearchParams(cfRequest.querystring || ""),
         cookies: parseCookies(cfRequest.headers),

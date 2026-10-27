@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { decide, exchangeToken, safeTarget, targetCookieName, matchPath, _resetKeyMismatch } from "../src/decide.js";
+import { decide, exchangeToken, safeTarget, targetCookieName, matchPath, _resetKeyMismatch, _resetNoSensorWarnings } from "../src/decide.js";
 import { validateConfig } from "../src/config.js";
 import { sortRules } from "../src/acl.js";
 import { passCookieName } from "../src/pass.js";
@@ -43,6 +43,7 @@ beforeEach(() => {
 afterEach(() => {
     vi.restoreAllMocks();
     _resetKeyMismatch();
+    _resetNoSensorWarnings();
 });
 
 describe("decide — bypass barato", () => {
@@ -323,5 +324,65 @@ describe("validateConfig — valores de ejemplo", () => {
         expect(validateConfig({ client: "your-subdomain", privateKey: SECRET, adminHost: "a" }).ok).toBe(false);
         expect(validateConfig({ client: "orome", privateKey: "your-private-key", adminHost: "a" }).ok).toBe(false);
         expect(validateConfig({ client: "orome", privateKey: SECRET, adminHost: "a" }).ok).toBe(true);
+    });
+});
+
+describe("decide — modo por evento (activación automática)", () => {
+    const AUTO_SETTINGS = {
+        ...SETTINGS,
+        rules: sortRules([
+            { action: "redirect_to_queue", pattern: "/shop", pattern_type: "prefix", event_id: "ev-42", priority: 0, enabled: true, threshold: 100, max_load: 0, tolerance: 0.8, buy_time: 600 },
+            { action: "redirect_to_queue", pattern: "/manual", pattern_type: "prefix", event_id: "ev-7", priority: 1, enabled: true, threshold: 0, max_load: 0 },
+        ]),
+    };
+    const sensorSaying = (state) => ({ observe: vi.fn(async () => state) });
+    const autoReq = (over = {}) => ({ ...req(over), clientKey: "203.0.113.7|Mozilla" });
+
+    it("una regla sin umbrales encola siempre y no toca el sensor", async () => {
+        const sensor = sensorSaying("inactive");
+        const d = await decide(autoReq({ path: "/manual/x" }), CONFIG, { ...deps({ settings: AUTO_SETTINGS }), sensor });
+
+        expect(d.type).toBe("redirect");
+        expect(sensor.observe).not.toHaveBeenCalled();
+    });
+
+    it("una regla con umbrales pregunta al sensor con la clave del cliente y los parámetros del lazo", async () => {
+        const sensor = sensorSaying("active");
+        const d = await decide(autoReq(), CONFIG, { ...deps({ settings: AUTO_SETTINGS }), sensor });
+
+        expect(d.type).toBe("redirect");
+        expect(sensor.observe).toHaveBeenCalledWith("ev-42", "203.0.113.7|Mozilla", { threshold: 100, maxLoad: 0, tolerance: 0.8, buyTime: 600 });
+    });
+
+    it("evento inactivo o desconocido: el visitante pasa (Direct Pass / fail-open)", async () => {
+        expect((await decide(autoReq(), CONFIG, { ...deps({ settings: AUTO_SETTINGS }), sensor: sensorSaying("inactive") })).type).toBe("allow");
+        expect((await decide(autoReq(), CONFIG, { ...deps({ settings: AUTO_SETTINGS }), sensor: sensorSaying("unknown") })).type).toBe("allow");
+    });
+
+    it("sin sensor (sin tcToken) una regla automática encola siempre y avisa una vez", async () => {
+        const warn = vi.fn();
+        const d = { ...deps({ settings: AUTO_SETTINGS }), logger: { log() { }, warn, error() { } } };
+
+        expect((await decide(autoReq(), CONFIG, d)).type).toBe("redirect");
+        expect((await decide(autoReq(), CONFIG, d)).type).toBe("redirect");
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0][0]).toContain("tcToken");
+    });
+
+    it("un visitante con pase no cuenta como llegada", async () => {
+        const sensor = sensorSaying("inactive");
+        const cookies = { [passCookieName("ev-42")]: ELIXIR_PASS };
+        const d = await decide(autoReq({ cookies }), CONFIG, { ...deps({ settings: AUTO_SETTINGS }), sensor });
+
+        expect(d.type).toBe("allow");
+        expect(d.renew).toBeTruthy();
+        expect(sensor.observe).not.toHaveBeenCalled();
+    });
+
+    it("sin clientKey (otros adaptadores) usa el host como clave", async () => {
+        const sensor = sensorSaying("active");
+        await decide(req(), CONFIG, { ...deps({ settings: AUTO_SETTINGS }), sensor });
+
+        expect(sensor.observe.mock.calls[0][1]).toBe("shop.test");
     });
 });

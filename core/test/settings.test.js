@@ -81,3 +81,14 @@ describe("settings — cache", () => {
         expect(resolveCookieLifetime(999_999)).toBe(86_400);
     });
 });
+
+describe("settings — parámetros del lazo", () => {
+    it("conserva threshold, max_load, tolerance y buy_time de cada regla", async () => {
+        const fetchImpl = ok(BODY({
+            acls: [{ action: "redirect_to_queue", pattern: "/shop", pattern_type: "prefix", event_id: "ev-42", priority: 0, enabled: true, threshold: 100, max_load: 500, tolerance: 0.8, buy_time: 600 }],
+        }));
+        const settings = await getSettings({ client: "loop" }, { sortRules, logger, fetchImpl });
+
+        expect(settings.rules[0]).toMatchObject({ threshold: 100, max_load: 500, tolerance: 0.8, buy_time: 600 });
+    });
+});

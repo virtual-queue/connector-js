@@ -8,7 +8,16 @@
 // la verificación del pase llegue a todas las integraciones a la vez, en vez de
 // arreglarse en una y quedar pendiente en las otras.
 
-export { ASSET_REGEX, globToRegex, matchRule, sortRules, findMatch } from "./acl.js";
+export { ASSET_REGEX, globToRegex, matchRule, sortRules, findMatch, isAutomatic, loopParams } from "./acl.js";
+export { Deduper } from "./dedupe.js";
+export {
+    createSensor,
+    buildTcLine,
+    tcTokenOf,
+    tcUrlOf,
+    DEFAULT_TC_URL,
+    DEFAULT_TOLERANCE,
+} from "./tc.js";
 export { verifyPass, hasValidPassFor, passCookieName, PASS_COOKIE_PREFIX } from "./pass.js";
 export {
     getSettings,
@@ -24,6 +33,7 @@ export {
     isBypassPath,
     matchPath,
     _resetKeyMismatch,
+    _resetNoSensorWarnings,
     queueToken,
     safeTarget,
     targetCookieName,

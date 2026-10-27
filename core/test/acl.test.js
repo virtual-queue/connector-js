@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { isAutomatic, loopParams } from "../src/acl.js";
 import { matchRule, sortRules, findMatch, ASSET_REGEX } from "../src/acl.js";
 
 describe("acl — matcheo", () => {
@@ -35,5 +36,23 @@ describe("acl — matcheo", () => {
         expect(ASSET_REGEX.test("/shop/products.json")).toBe(false);
         expect(ASSET_REGEX.test("/shop/app.css")).toBe(true);
         expect(ASSET_REGEX.test("/img/foto.AVIF")).toBe(true);
+    });
+});
+
+describe("acl — modo por evento", () => {
+    it("una regla es automática solo con threshold o max_load positivos", () => {
+        expect(isAutomatic({ threshold: 100 })).toBe(true);
+        expect(isAutomatic({ max_load: "500" })).toBe(true);
+        expect(isAutomatic({ threshold: 0, max_load: 0 })).toBe(false);
+        expect(isAutomatic({ threshold: null, max_load: null })).toBe(false);
+        expect(isAutomatic({})).toBe(false); // admin viejo que no manda los campos
+        expect(isAutomatic({ threshold: -1 })).toBe(false);
+    });
+
+    it("loopParams normaliza y deja tolerance en null si no viene", () => {
+        expect(loopParams({ threshold: "100", max_load: 500, tolerance: 0.5, buy_time: 300 }))
+            .toEqual({ threshold: 100, maxLoad: 500, tolerance: 0.5, buyTime: 300 });
+        expect(loopParams({ threshold: null, max_load: undefined, tolerance: null, buy_time: "x" }))
+            .toEqual({ threshold: 0, maxLoad: 0, tolerance: null, buyTime: 0 });
     });
 });

@@ -1,6 +1,6 @@
 {
 	"name": "@vqueue/connector-aws-lambda-edge",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"private": true,
 	"type": "module",
 	"description": "Conector de VQueue para AWS Lambda@Edge (CloudFront). Protección de cola que el cliente instala en su propio AWS.",

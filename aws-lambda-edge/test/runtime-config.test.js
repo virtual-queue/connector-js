@@ -5,6 +5,8 @@ const PLACEHOLDERS = {
     client: "__VQ_CLIENT__",
     privateKey: "__VQ_PRIVATE_KEY__",
     adminHost: "clients.virtual-queue.com",
+    tcUrl: "https://tc.virtual-queue.com",
+    tcToken: "__VQ_TC_TOKEN__",
     verifyTimeoutMs: 2000,
 };
 const BAKED = { ...PLACEHOLDERS, client: "orome", privateKey: "k" };
@@ -29,6 +31,15 @@ describe("runtime-config", () => {
         const config = await createConfigProvider(PLACEHOLDERS, { fetchSecret, logger: quiet })();
 
         expect(config).toMatchObject({ client: "orome", privateKey: "clave", adminHost: "clients.virtual-queue.com", verifyTimeoutMs: 2000 });
+    });
+
+    it("el secreto puede traer el token y la URL del traffic counter; sin ellos el token queda vacío", async () => {
+        const withTc = await createConfigProvider(PLACEHOLDERS, { fetchSecret: async () => secret({ tcToken: "vqtc_abc", tcUrl: "https://tc.staging.test" }), logger: quiet })();
+        expect(withTc).toMatchObject({ tcToken: "vqtc_abc", tcUrl: "https://tc.staging.test" });
+
+        const without = await createConfigProvider(PLACEHOLDERS, { fetchSecret: async () => secret(), logger: quiet })();
+        expect(without.tcToken).toBe("");
+        expect(without.tcUrl).toBe(PLACEHOLDERS.tcUrl);
     });
 
     it("el secreto puede traer su propio adminHost", async () => {

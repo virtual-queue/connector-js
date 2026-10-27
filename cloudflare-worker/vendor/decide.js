@@ -6,7 +6,7 @@
 // la API de verify no responde, si el pase está roto — el visitante pasa. Un
 // conector que rompe el sitio del cliente es peor que uno que no encola.
 
-import { ASSET_REGEX, findMatch } from "./acl.js";
+import { ASSET_REGEX, findMatch, isAutomatic, loopParams } from "./acl.js";
 import { hasValidPassFor, passCookieName, verifyPass } from "./pass.js";
 
 export const TARGET_COOKIE_PREFIX = "vq_target_";
@@ -42,6 +42,24 @@ function keyMismatchActive(privateKey) {
 // Solo para tests.
 export function _resetKeyMismatch() {
     keyMismatchUntil.clear();
+}
+
+// Una regla automática sin sensor (sin tcToken en la config) encola siempre, y
+// se avisa una vez por evento y por rato: en cada request serían millones de
+// líneas durante un pico.
+const NO_SENSOR_WARN_MS = 10 * 60_000;
+const noSensorWarnedAt = new Map(); // eventId -> epoch ms
+
+function warnNoSensor(logger, eventId) {
+    const last = noSensorWarnedAt.get(eventId) || 0;
+    if (Date.now() - last < NO_SENSOR_WARN_MS) return;
+    noSensorWarnedAt.set(eventId, Date.now());
+    logger?.warn?.(`[decide] la regla de ${eventId} tiene umbrales pero el conector no tiene tcToken: encola siempre. Cargá el token del traffic counter para activar la protección automática.`);
+}
+
+// Solo para tests.
+export function _resetNoSensorWarnings() {
+    noSensorWarnedAt.clear();
 }
 
 // Path con el que se evalúan bypass y ACLs. Se decodifica (un origen decodifica
@@ -162,6 +180,12 @@ export async function exchangeToken(token, settings, { logger, fetchImpl = fetch
 /**
  * Decide qué hacer con un request ya normalizado.
  *
+ * Modo por evento: una regla `redirect_to_queue` sin umbrales encola siempre
+ * (manual). Una regla con `threshold` o `max_load` > 0 es automática: solo
+ * encola mientras el TC diga que el evento está activo, y para eso necesita
+ * `deps.sensor` (ver tc.js) y `req.clientKey` (IP|User-Agent, la clave de
+ * dedupe). Sin sensor, una regla automática encola siempre y lo avisa.
+ *
  * @returns {{type:"bypass"}
  *         | {type:"allow", renew?: {name:string, value:string, maxAge:number}}
  *         | {type:"redirect", location:string, cookies:Array}}
@@ -272,10 +296,27 @@ export async function decide(req, config, deps) {
         return { type: "allow" };
     }
 
+    //-----------------------------------------
+    // 4) Activación automática (reglas con umbrales)
+    //-----------------------------------------
+    // Igual que el Worker: solo cuentan los que NO tienen pase (los admitidos ya
+    // están "adentro"). El sensor nunca lanza; "unknown" es fail-open.
+    if (isAutomatic(rule)) {
+        if (!deps.sensor) {
+            warnNoSensor(logger, eventId);
+        } else {
+            const state = await deps.sensor.observe(eventId, req.clientKey || req.host, loopParams(rule));
+            if (state !== "active") {
+                logger?.log?.(`[decide] evento ${eventId} ${state} → allow`);
+                return { type: "allow" };
+            }
+        }
+    }
+
     logger?.log?.(`[decide] sin pase para ${eventId} (${pass.reason}) → cola`);
 
     //-----------------------------------------
-    // 4) A la sala de espera
+    // 5) A la sala de espera
     //-----------------------------------------
     // El destino se guarda solo en navegaciones: un fetch/XHR a una ruta protegida
     // pisaría la página que el visitante pidió. Sin el header (navegadores viejos,

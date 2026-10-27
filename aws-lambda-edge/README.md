@@ -2,8 +2,9 @@
 
 Queue protection for customers who want to run it in **their own AWS account**,
 instead of behind our edge. It does what the JS adapter does (rule-based
-protection, no automatic load sensors), but on the server side: a visitor can't
-bypass it by disabling JavaScript.
+protection), but on the server side: a visitor can't bypass it by disabling
+JavaScript. Rules with a traffic threshold also **activate on their own** when the
+traffic arrives (see *Automatic activation*).
 
 It is two **Lambda@Edge** functions attached to a CloudFront distribution.
 
@@ -21,11 +22,47 @@ It is two **Lambda@Edge** functions attached to a CloudFront distribution.
    match wins.
 4. **Pass** — verifies the signature **offline** with your company's `private_key`.
    It doesn't call VirtualQueue on every request.
-5. **Sliding renewal** — while the visitor keeps browsing, the pass is extended.
+5. **Automatic activation** — a rule with a threshold or a max load only queues
+   while VirtualQueue's traffic counter says the event is active. A rule without
+   thresholds queues every visitor without a pass, as before.
+6. **Sliding renewal** — while the visitor keeps browsing, the pass is extended.
 
 Everything fails open: with no settings, an unresponsive verify endpoint, or a bad
 config, the visitor gets through. A connector that breaks your site is worse than
 one that doesn't queue.
+
+## Automatic activation
+
+Each rule is **manual** or **automatic**, and you switch between the two from the
+VirtualQueue panel, without touching your AWS:
+
+| Rule | Behaviour |
+|---|---|
+| No threshold and no max load | Manual: every visitor without a pass goes to the waiting room. |
+| A threshold (arrivals/s) or a max load (concurrent buyers) | Automatic: visitors pass straight through until the traffic crosses the threshold; then the queue turns on, and it turns off again when the peak is over. |
+
+Automatic rules need the **Traffic counter token** of your company (company
+settings in the panel), given to the stack as `TcToken`. With it, every function
+container counts the visitors that reach an automatic rule without a pass and, once
+per second, sends the **totals** (arrivals and distinct visitors, deduplicated by
+IP + User-Agent inside the container) to `tc.virtual-queue.com`. The reply carries
+the event state, which the container applies for the next second. The traffic
+counter never receives paths, IPs, cookies or any per-visitor data: one line of
+numbers per container per second, whatever your traffic is.
+
+Failure policy, in the same spirit as the rest of the connector:
+
+- Counter unreachable or slow (800 ms timeout): the last known state is kept for
+  60 s, then visitors pass (fail-open). The counter can never take your site down.
+- Automatic rule but no `TcToken`: the rule behaves as manual (queues everyone) and
+  the logs say so once every 10 minutes.
+- `TcToken` rejected by the counter (typo, rotated): same thing, queue everyone and
+  log an error. A wrong token never disables protection silently.
+
+Cost: the request that crosses the one-second tick pays one extra network call
+(100-200 ms from us-east-1); the other requests of that second don't touch the
+network. Only visitors **without a pass** are counted, so visitors already admitted
+never pay it.
 
 ## Installation
 
@@ -38,16 +75,19 @@ One click opens the AWS console with everything pre-filled, in `us-east-1`:
 
 [![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/new?stackName=vqueue-connector&templateURL=https%3A%2F%2Fvirtual-queue-connector-releases.s3.amazonaws.com%2Freleases%2Flatest%2Ftemplate.yaml)
 
-It asks for two values:
+It asks for two values, plus an optional one:
 
 - **Client**: your company subdomain in VirtualQueue (the same one the JS adapter
   uses).
 - **PrivateKey**: your company `private_key`. Contact VirtualQueue support if you
   don't have it.
+- **TcToken** (optional): your *Traffic counter token*, from the company settings in
+  the panel. Only needed if some rule has a threshold or a max load (see *Automatic
+  activation*). You can add it later by editing the secret.
 
 The stack creates the two functions, their role, and a **Secrets Manager** secret
-(`vqueue/connector`) that holds your key. The key **never travels inside a zip**:
-the release zips are identical for every customer.
+(`vqueue/connector`) that holds your key and token. They **never travel inside a
+zip**: the release zips are identical for every customer.
 
 When it finishes, *Outputs* lists the ARNs of the two function versions. One step
 is left that CloudFormation can't do for you: in CloudFront, edit the behavior you
@@ -136,6 +176,7 @@ whose import alone takes ~2.5 s at 128 MB.
 | ACLs + queue URL | `GET https://<admin>/api/v1/adapter/<client>/settings` | **None** (public, cacheable) |
 | Token exchange | `GET <queue_url>/api/v1/queue/verify?token=` | None |
 | Pass | `vq_pass_<event_id>` cookie | HMAC-SHA256 with `private_key`, offline |
+| Traffic totals + event state | `POST https://tc.virtual-queue.com/v1/ingest`, one `v1` line per container per second | Company *Traffic counter token*, inside the line |
 
 The connector uses the **public** settings endpoint, not `/api/v1/edge/config/`:
 the latter is internal to the platform and requires a token that is not given to
@@ -164,5 +205,9 @@ npm test
 - **Only a UUID is a queue token.** `?token=` and `?vq_token=` are claimed only when
   they look like a UUID (it's the line id), like the JS adapter. Your site's own
   `?token=` never costs a round trip to VirtualQueue.
-- **No automatic protection.** This connector has no load sensors; activation is
-  per rule (`enabled`).
+- **The traffic counter sees totals, not visitors.** Distinct visitors are counted
+  per container, so the same visitor served by two containers counts twice. It is a
+  bounded overestimate, the same the managed edge has.
+- **Lambda@Edge has a ceiling.** The default quota is 10,000 requests per second per
+  region for viewer functions; CloudFront answers 503 above it. For spikes beyond
+  that, the queue has to run in front of CloudFront.

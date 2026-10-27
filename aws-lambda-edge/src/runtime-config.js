@@ -136,6 +136,10 @@ export function createConfigProvider(baked, { fetchSecret = fetchSecretFromSecre
                 client: secret.client,
                 privateKey: secret.privateKey,
                 ...(secret.adminHost ? { adminHost: secret.adminHost } : {}),
+                // Opcionales: sin tcToken no hay sensor (el placeholder horneado
+                // también cuenta como "sin token").
+                ...(secret.tcUrl ? { tcUrl: secret.tcUrl } : {}),
+                tcToken: typeof secret.tcToken === "string" ? secret.tcToken : "",
             };
 
             const check = validateConfig(config);

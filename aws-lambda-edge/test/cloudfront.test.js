@@ -69,6 +69,14 @@ describe("cloudfront — request normalizado", () => {
         expect(req.method).toBe("GET");
     });
 
+    it("arma la clave del cliente con la IP de CloudFront y el User-Agent", () => {
+        const req = toRequest({ ...cfRequest({ headers: header("user-agent", "Mozilla/5.0") }), clientIp: "203.0.113.7" });
+        expect(req.clientKey).toBe("203.0.113.7|Mozilla/5.0");
+
+        // Sin datos no rompe: la clave vacía no deduplica, pero sigue contando.
+        expect(toRequest(cfRequest()).clientKey).toBe("|");
+    });
+
     it("detecta el upgrade de WebSocket sin importar mayúsculas", () => {
         const req = toRequest(cfRequest({ headers: header("upgrade", "WebSocket") }));
         expect(req.isWebsocket).toBe(true);

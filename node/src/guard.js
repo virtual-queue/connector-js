@@ -156,9 +156,14 @@ export function fromNodeRequest(req) {
     const host = req.headers?.["x-forwarded-host"] || req.headers?.host || "";
     const url = new URL(req.url || "/", `https://${host || "placeholder.invalid"}`);
     const upgrade = req.headers?.upgrade;
+    // Clave de dedupe del sensor (IP|User-Agent). Detrás de un proxy, la primera
+    // IP de X-Forwarded-For es la del visitante.
+    const forwarded = req.headers?.["x-forwarded-for"];
+    const ip = forwarded ? String(forwarded).split(",")[0].trim() : req.socket?.remoteAddress || "";
 
     return {
         host: String(host).split(":")[0].toLowerCase(),
+        clientKey: `${ip}|${req.headers?.["user-agent"] || ""}`,
         path: url.pathname,
         query: url.searchParams,
         cookies: parseCookies(req.headers?.cookie),

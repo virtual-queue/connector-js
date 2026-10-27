@@ -4,7 +4,7 @@
 // `privateKey` tienen que viajar dentro del bundle. Este script los inyecta y
 // produce un .zip por función, listo para subir.
 //
-//   node scripts/build.mjs --client orome --private-key <clave> [--admin-host ...] [--debug]
+//   node scripts/build.mjs --client orome --private-key <clave> [--tc-token <token>] [--admin-host ...] [--debug]
 //   node scripts/build.mjs --unconfigured [--out dist]
 //
 // El resultado queda en dist/: viewer-request.zip y viewer-response.zip
@@ -53,6 +53,9 @@ Falta configuración.
   --client        Subdominio de la compañía en VQueue (el mismo que usa el JS adapter)
   --private-key   private_key de la compañía. Es el secreto con el que VQueue
                   firma el pase; queda dentro del bundle, en el AWS del cliente.
+  --tc-token      Token del traffic counter de la compañía (panel → "Traffic counter
+                  token"). Opcional: sin él, las reglas con umbrales encolan siempre.
+  --tc-url        Default: https://tc.virtual-queue.com
   --admin-host    Default: clients.virtual-queue.com
   --debug         Logs verbosos (NO usar en producción: son por request)
 `);
@@ -63,6 +66,9 @@ const config = UNCONFIGURED ? null : {
     client: args.client,
     privateKey: args["private-key"],
     adminHost: args["admin-host"] || "clients.virtual-queue.com",
+    tcUrl: args["tc-url"] || "https://tc.virtual-queue.com",
+    tcToken: typeof args["tc-token"] === "string" ? args["tc-token"] : "",
+    tcTimeoutMs: 800,
     settingsTtlMs: 30_000,
     settingsTimeoutMs: 1_500,
     verifyTimeoutMs: 2_000,
@@ -112,7 +118,7 @@ async function assertNoPlaceholders(outfile, name) {
 async function assertUnconfigured(outfile, name) {
     if (name !== "viewer-request") return; // viewer-response no usa la config
     const code = await readFile(outfile, "utf8");
-    if (!code.includes("__VQ_PRIVATE_KEY__")) {
+    if (!code.includes("__VQ_PRIVATE_KEY__") || !code.includes("__VQ_TC_TOKEN__")) {
         throw new Error(`${name}: el bundle sin configurar perdió los placeholders`);
     }
 }
@@ -147,7 +153,7 @@ await mkdir(path.join(DIST, "viewer-response"), { recursive: true });
 
 console.log(UNCONFIGURED
     ? "Empaquetando SIN configurar (la config se lee de Secrets Manager)"
-    : `Empaquetando para client=${config.client} (admin: ${config.adminHost})`);
+    : `Empaquetando para client=${config.client} (admin: ${config.adminHost}, sensor: ${config.tcToken ? "sí" : "no"})`);
 await bundle("viewer-request");
 await bundle("viewer-response");
 console.log(`\nListo. Subí cada zip a su Lambda y asociá las funciones a la

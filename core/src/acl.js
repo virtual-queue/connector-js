@@ -2,8 +2,11 @@
 // el JS adapter: reglas ordenadas por prioridad, gana el primer match.
 //
 // La forma de cada regla la fija el admin (EdgeAcls.@public_fields):
-//   { action, pattern, pattern_type, event_id, priority, enabled }
-// Nunca trae claves ni umbrales: el endpoint es público.
+//   { action, pattern, pattern_type, event_id, priority, enabled,
+//     threshold, max_load, tolerance, buy_time }
+// Nunca trae claves: el endpoint es público. Los cuatro últimos son los
+// parámetros del lazo de activación automática (ver tc.js); una regla sin
+// umbrales (o de un admin viejo que no los manda) es manual y encola siempre.
 
 const globRegexCache = new Map();
 const MAX_GLOB_CACHE = 1000;
@@ -60,4 +63,29 @@ export function sortRules(acls) {
 
 export function findMatch(sortedRules, path) {
     return sortedRules.find((rule) => matchRule(rule, path)) || null;
+}
+
+function nonNegative(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+// Una regla es automática si el operador le puso un umbral de pico (threshold,
+// llegadas/s) o de concurrencia (max_load). Sin ninguno, la cola está siempre
+// encendida para esa regla, que es el comportamiento histórico del conector.
+export function isAutomatic(rule) {
+    return nonNegative(rule?.threshold) > 0 || nonNegative(rule?.max_load) > 0;
+}
+
+// Los parámetros del lazo tal como viajan al TC. `tolerance` queda en null si el
+// admin no lo manda, y el sensor aplica su default.
+export function loopParams(rule) {
+    const raw = rule?.tolerance;
+    const tolerance = raw == null || raw === "" ? NaN : Number(raw);
+    return {
+        threshold: nonNegative(rule?.threshold),
+        maxLoad: nonNegative(rule?.max_load),
+        tolerance: Number.isFinite(tolerance) ? tolerance : null,
+        buyTime: nonNegative(rule?.buy_time),
+    };
 }

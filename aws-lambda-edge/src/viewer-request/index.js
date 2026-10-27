@@ -7,11 +7,17 @@
 //
 // Presupuesto: 5s de timeout y 1 MB. El camino caliente (visitante con pase
 // válido y config en memoria) no hace red: verifica el HMAC offline y sigue.
+//
+// Activación automática: las reglas con umbrales cuentan llegadas por contenedor
+// y, una vez por segundo, el request que cruza el tick manda los totales al TC
+// y toma el estado del evento (ver core/src/tc.js). Sin `tcToken` en la config
+// no hay sensor y esas reglas encolan siempre.
 
 import { buildLogger } from "@vqueue/connector-core/config";
 import { sortRules } from "@vqueue/connector-core/acl";
 import { getSettings } from "@vqueue/connector-core/settings";
 import { decide } from "@vqueue/connector-core/decide";
+import { createSensor } from "@vqueue/connector-core/tc";
 import { markForRenewal, redirectResponse, stripInternalHeaders, toRequest } from "../cloudfront.js";
 import { createConfigProvider } from "../runtime-config.js";
 // Lo escribe `npm run build` con los datos del cliente, o queda con
@@ -28,6 +34,18 @@ const getConfig = createConfigProvider(BAKED, { logger });
 // latencia hacia us-east-1. Pasado este presupuesto se suelta al visitante: lo
 // que quedó en vuelo sigue y llena el cache para el próximo request.
 const DEADLINE_MS = Number(BAKED.deadlineMs) || 4_000;
+
+// El sensor vive con el contenedor (sus contadores y el estado cacheado). Se
+// rearma solo si la config cambia (rotación del secreto).
+let sensor = null;
+let sensorConfig = null;
+function sensorFor(config) {
+    if (config !== sensorConfig) {
+        sensor = createSensor(config, { logger });
+        sensorConfig = config;
+    }
+    return sensor;
+}
 
 export async function handler(event) {
     const cfRequest = event.Records[0].cf.request;
@@ -62,6 +80,7 @@ async function handleRequest(cfRequest) {
             logger,
             getSettings: () => getSettings(config, { sortRules, logger }),
             verifyTimeoutMs: config.verifyTimeoutMs,
+            sensor: sensorFor(config),
         });
 
         switch (decision.type) {

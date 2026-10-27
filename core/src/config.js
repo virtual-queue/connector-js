@@ -6,6 +6,11 @@
 // `privateKey` es el `private_key` de la compañía: el mismo secreto con el que
 // VQueue firma el pase. Vive en el AWS del cliente y nunca sale de ahí.
 
+// `tcToken` (opcional) es el token del traffic counter de la compañía: habilita
+// la activación automática para las reglas con umbrales. No se valida acá a
+// propósito: un token ausente o mal cargado no puede apagar el conector entero
+// (ver tc.js, que lo trata por su cuenta).
+//
 // Los valores concretos viven en src/generated-config.js, que escribe el build.
 
 // Valores de ejemplo que traen los instaladores (.dev.vars.example, plantillas).

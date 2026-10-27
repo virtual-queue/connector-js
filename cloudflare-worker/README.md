@@ -1,9 +1,11 @@
 # VirtualQueue Cloudflare Connector
 
 Queue protection for customers who want to run it in **their own Cloudflare
-account**. It does what the JS adapter does (rule-based protection, no automatic
-load sensors), but on the server side: a visitor can't bypass it by disabling
-JavaScript.
+account**. It does what the JS adapter does (rule-based protection), but on the
+server side: a visitor can't bypass it by disabling JavaScript. It has no load
+sensor: a rule with a traffic threshold queues every visitor from this Worker (the
+automatic activation on Cloudflare runs in VirtualQueue's managed edge; on AWS, in
+the Lambda@Edge connector).
 
 It is a single **Cloudflare Worker** attached to a route of your zone.
 
