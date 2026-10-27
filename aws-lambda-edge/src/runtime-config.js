@@ -13,7 +13,8 @@
 // mal configurado nunca bloquea el sitio del cliente.
 
 import { createHash, createHmac } from "node:crypto";
-import { validateConfig } from "@vqueue/connector-core/config";
+import { buildLogger, validateConfig } from "@vqueue/connector-core/config";
+import { phase } from "@vqueue/connector-core/timing";
 
 // Nombre fijo: el bundle no se puede parametrizar por instalación y el template
 // crea el secreto con este mismo nombre.
@@ -128,6 +129,9 @@ export function createConfigProvider(baked, { fetchSecret = fetchSecretFromSecre
     let inflight = null;
 
     async function load() {
+        // Mide la lectura del secreto, que es la primera llamada de red del
+        // contenedor frío: TLS nuevo contra Secrets Manager en us-east-1.
+        const done = phase(logger, "config");
         try {
             const raw = await fetchSecret();
             const secret = JSON.parse(raw);
@@ -140,13 +144,23 @@ export function createConfigProvider(baked, { fetchSecret = fetchSecretFromSecre
                 // también cuenta como "sin token").
                 ...(secret.tcUrl ? { tcUrl: secret.tcUrl } : {}),
                 tcToken: typeof secret.tcToken === "string" ? secret.tcToken : "",
+                // El bundle sin configurar se publica con debug en false y no
+                // se puede rebuildear por instalación: sin esto, quien instala
+                // con el botón de CloudFormation no tiene forma de encender los
+                // logs para diagnosticar.
+                ...(secret.debug === true ? { debug: true } : {}),
             };
 
             const check = validateConfig(config);
             if (!check.ok) throw new Error(check.errors.join("; "));
 
             entry = { config, expire: now() + REFRESH_MS };
+            // Con el logger de la config recién resuelta: el de afuera se armó
+            // con el bundle sin configurar, donde debug siempre es false, y se
+            // comería justo la línea del arranque en frío.
+            done("secret", buildLogger(config));
         } catch (err) {
+            done("error");
             // Si ya había una config buena se sigue sirviendo (el secreto puede
             // estar rotándose); si no, null = fail-open hasta el próximo intento.
             logger.error?.(

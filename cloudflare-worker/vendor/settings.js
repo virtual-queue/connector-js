@@ -11,6 +11,8 @@
 // compartido (DynamoDB/S3) porque el endpoint ya es cacheable por CDN
 // (`public, max-age=30, s-maxage=60`) y las ACLs cambian poco.
 
+import { phase } from "./timing.js";
+
 const DEFAULT_TTL_MS = 30_000;
 // Vida de una entrada servida en modo degradado tras un fallo: corta, para
 // reintentar pronto, pero suficiente para no castigar cada request.
@@ -79,10 +81,15 @@ export async function getSettings(config, { sortRules, logger, now = Date.now, f
     const ttl = Number(config.settingsTtlMs) || DEFAULT_TTL_MS;
     const timeout = Number(config.settingsTimeoutMs) || DEFAULT_TIMEOUT_MS;
 
+    // Solo se mide el refresco real: un hit de cache no llega hasta acá, y esa
+    // ausencia de línea ya dice que el contenedor venía tibio.
+    const done = phase(logger, "settings");
+
     // Ante un fallo servimos la última config buena aunque esté vencida: es
     // preferible a dejar el origen sin protección por un hipo de red. Y se
     // cachea el fallo unos segundos: sin eso, cada request pagaría el timeout.
     const degrade = (reason) => {
+        done(reason);
         logger?.warn?.(`[settings] ${reason}`);
         entry.expire = now() + STALE_TTL_MS;
         return entry.settings;
@@ -111,6 +118,7 @@ export async function getSettings(config, { sortRules, logger, now = Date.now, f
         const settings = normalize(body?.data, sortRules);
         if (!settings) return degrade("unexpected body");
 
+        done("ok");
         entry.settings = settings;
         entry.expire = now() + ttl;
         logger?.log?.(`[settings] loaded ${settings.rules.length} rules`);

@@ -111,6 +111,26 @@ and lets traffic through (and logs it) until you update the secret.
 Rule changes reach visitors in about a minute: the rules endpoint is cached for
 up to 60 s, plus 30 s in each Worker instance.
 
+### Measuring where the time goes
+
+With `DEBUG="true"`, the connector logs one line per phase, so a slow network call is easy
+to tell apart from the rest:
+
+```
+[timing] settings 1483ms ok      ← GET /api/v1/adapter/:client/settings
+[timing] verify 607ms ok         ← POST /queue/verify, only when returning from the queue
+[timing] sensor 118ms active     ← traffic counter tick, only with a tcToken
+[timing] decide 1502ms redirect  ← the whole decision, including the waits above
+```
+
+`[timing] request 1961ms cold` closes the connector's part, before going to the
+origin, and says whether this was the isolate's first request. It matters because
+the settings cache lives **per isolate**.
+
+A phase that does not appear did not run: no `settings` line means they were
+already cached. These lines are **per request**: turn debug off when you are done
+measuring.
+
 ## Contracts with VirtualQueue
 
 | What | Where | Authentication |

@@ -51,6 +51,25 @@ if (guard.apply(decision, res)) return; // already responded (302 to the queue)
 Unlike the Lambda@Edge connector, **environment variables are available here**, so
 the `private_key` is never baked into a bundle.
 
+### Measuring where the time goes
+
+With `debug: true`, the connector logs one line per phase, so a slow network call is easy
+to tell apart from the rest:
+
+```
+[timing] settings 1483ms ok      ← GET /api/v1/adapter/:client/settings
+[timing] verify 607ms ok         ← POST /queue/verify, only when returning from the queue
+[timing] sensor 118ms active     ← traffic counter tick, only with a tcToken
+[timing] decide 1502ms redirect  ← the whole decision, including the waits above
+```
+
+The settings cache lives in the process, so only the first request after boot (and
+one every `settingsTtlMs`) pays for `settings`.
+
+A phase that does not appear did not run: no `settings` line means they were
+already cached. These lines are **per request**: turn debug off when you are done
+measuring.
+
 ## What it does, in order
 
 1. **Cheap bypass** — assets, `/api/`, WebSockets, and methods other than GET/HEAD

@@ -8,6 +8,7 @@
 
 import { ASSET_REGEX, findMatch, isAutomatic, loopParams } from "./acl.js";
 import { hasValidPassFor, passCookieName, verifyPass } from "./pass.js";
+import { phase } from "./timing.js";
 
 export const TARGET_COOKIE_PREFIX = "vq_target_";
 // El destino se guarda solo para cruzar la ida a la cola; no necesita durar más.
@@ -120,7 +121,14 @@ function stripQueueToken(query) {
  * normal y dejar pasar: un problema nuestro no puede devolver a la cola a
  * alguien que ya la hizo.
  */
-export async function exchangeToken(token, settings, { logger, fetchImpl = fetch, verifyTimeoutMs = 2000 } = {}) {
+export async function exchangeToken(token, settings, deps = {}) {
+    const done = phase(deps.logger, "verify");
+    const result = await runExchange(token, settings, deps);
+    done(result?.unavailable ? "unavailable" : result ? "ok" : "rejected");
+    return result;
+}
+
+async function runExchange(token, settings, { logger, fetchImpl = fetch, verifyTimeoutMs = 2000 } = {}) {
     const url = `${settings.queueUrl.replace(/\/+$/, "")}/api/v1/queue/verify?token=${encodeURIComponent(token)}`;
 
     let resp;
@@ -191,6 +199,16 @@ export async function exchangeToken(token, settings, { logger, fetchImpl = fetch
  *         | {type:"redirect", location:string, cookies:Array}}
  */
 export async function decide(req, config, deps) {
+    // El total incluye las esperas de settings, verify y sensor: restándole las
+    // fases de adentro se ve cuánto pone el conector por su cuenta (debería ser
+    // despreciable) y cuánto es red.
+    const done = phase(deps.logger, "decide");
+    const decision = await runDecision(req, config, deps);
+    done(decision.type);
+    return decision;
+}
+
+async function runDecision(req, config, deps) {
     const { getSettings, logger } = deps;
 
     const path = matchPath(req.path);
@@ -305,7 +323,9 @@ export async function decide(req, config, deps) {
         if (!deps.sensor) {
             warnNoSensor(logger, eventId);
         } else {
+            const doneSensor = phase(logger, "sensor");
             const state = await deps.sensor.observe(eventId, req.clientKey || req.host, loopParams(rule));
+            doneSensor(state);
             if (state !== "active") {
                 logger?.log?.(`[decide] evento ${eventId} ${state} → allow`);
                 return { type: "allow" };

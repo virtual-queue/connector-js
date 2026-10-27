@@ -12,7 +12,8 @@
 		"./decide": "./src/decide.js",
 		"./config": "./src/config.js",
 		"./tc": "./src/tc.js",
-		"./dedupe": "./src/dedupe.js"
+		"./dedupe": "./src/dedupe.js",
+		"./timing": "./src/timing.js"
 	},
 	"files": [
 		"src"

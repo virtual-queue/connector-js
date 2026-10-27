@@ -40,3 +40,4 @@ export {
     TARGET_COOKIE_PREFIX,
 } from "./decide.js";
 export { validateConfig, buildLogger } from "./config.js";
+export { phase, logPhase } from "./timing.js";

@@ -18,14 +18,32 @@ import { sortRules } from "@vqueue/connector-core/acl";
 import { getSettings } from "@vqueue/connector-core/settings";
 import { decide } from "@vqueue/connector-core/decide";
 import { createSensor } from "@vqueue/connector-core/tc";
+import { logPhase } from "@vqueue/connector-core/timing";
 import { markForRenewal, redirectResponse, stripInternalHeaders, toRequest } from "../cloudfront.js";
 import { createConfigProvider } from "../runtime-config.js";
 // Lo escribe `npm run build` con los datos del cliente, o queda con
 // placeholders en el bundle sin configurar (que lee la config de Secrets Manager).
 import { CONFIG as BAKED } from "../generated-config.js";
 
-const logger = buildLogger(BAKED);
+let logger = buildLogger(BAKED);
 const getConfig = createConfigProvider(BAKED, { logger });
+
+// El bundle sin configurar trae debug en false y la config real recién llega
+// con el secreto, que puede pedirlo. Se rearma una vez por config.
+let loggerConfig = BAKED;
+function loggerFor(config) {
+    if (config !== loggerConfig) {
+        logger = buildLogger(config);
+        loggerConfig = config;
+    }
+    return logger;
+}
+
+// Primera invocación del contenedor. En Lambda@Edge el cache de settings vive
+// por contenedor y no hay forma de precalentarlo (ni provisioned concurrency ni
+// invocación directa de las réplicas), así que saber si el request fue el
+// primero es lo que separa "el conector tarda" de "el contenedor estaba frío".
+let coldStart = true;
 
 // Un viewer-request tiene 5 s de timeout y, si se pasa, CloudFront le devuelve un
 // 503 al visitante: el fail-open de adentro no alcanza, porque un timeout no es
@@ -49,6 +67,9 @@ function sensorFor(config) {
 
 export async function handler(event) {
     const cfRequest = event.Records[0].cf.request;
+    const startedAt = Date.now();
+    const cold = coldStart;
+    coldStart = false;
 
     // Siempre, incluso en fail-open: el header interno nunca viene del visitante.
     stripInternalHeaders(cfRequest);
@@ -65,6 +86,9 @@ export async function handler(event) {
         return await Promise.race([handleRequest(cfRequest), deadline]);
     } finally {
         clearTimeout(timer);
+        // `logger` se lee acá y no antes: para este punto ya es el de la
+        // config resuelta, que es la que sabe si debug está encendido.
+        logPhase(logger, "request", Date.now() - startedAt, cold ? "cold" : "warm");
     }
 }
 
@@ -73,6 +97,7 @@ async function handleRequest(cfRequest) {
         // Sin config válida no se encola a nadie: fail-open.
         const config = await getConfig();
         if (!config) return cfRequest;
+        loggerFor(config);
 
         const req = toRequest(cfRequest);
 

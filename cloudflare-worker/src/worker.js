@@ -13,6 +13,7 @@
 
 import { sortRules } from "../vendor/acl.js";
 import { buildLogger, validateConfig } from "../vendor/config.js";
+import { logPhase } from "../vendor/timing.js";
 import { decide } from "../vendor/decide.js";
 import { getSettings } from "../vendor/settings.js";
 import { cookieHeader, parseCookies } from "./cookies.js";
@@ -103,8 +104,15 @@ async function decideWithDeadline(req, config, logger) {
     }
 }
 
+// Primera request de este isolate: el cache de settings vive por isolate, así
+// que distingue "el conector tarda" de "el isolate estaba frío".
+let coldStart = true;
+
 export default {
     async fetch(request, env, ctx) {
+        const startedAt = Date.now();
+        const cold = coldStart;
+        coldStart = false;
         // Si algo en este handler lanza una excepción no capturada, Cloudflare
         // manda el request al origin en vez de mostrar el error 1101.
         ctx?.passThroughOnException?.();
@@ -130,6 +138,9 @@ export default {
             console.error(`[vq] error inesperado, fail-open: ${err?.stack || err}`);
             decision = { type: "allow" };
         }
+
+        // Antes de ir al origin: lo que sigue ya no es tiempo del conector.
+        logPhase(logger, "request", Date.now() - startedAt, cold ? "cold" : "warm");
 
         if (decision.type === "redirect") {
             try {

@@ -136,6 +136,34 @@ If there is no valid config from either place (missing secret, no permission, em
 key), the connector starts in fail-open mode: it lets everything through and says so
 in the logs, instead of queueing with made-up data.
 
+### Measuring where the time goes
+
+With `debug` on, the connector logs one line per phase to CloudWatch, so you can
+tell a cold container apart from a slow network call:
+
+```
+[timing] config 412ms secret      ← reading the Secrets Manager secret (path A only)
+[timing] settings 1483ms ok       ← GET /api/v1/adapter/:client/settings
+[timing] verify 607ms ok          ← POST /queue/verify, only when returning from the queue
+[timing] sensor 118ms active      ← traffic counter tick, only with a tcToken
+[timing] decide 1502ms redirect   ← the whole decision, including the waits above
+[timing] request 1961ms cold      ← the whole viewer-request, and whether it was
+                                    the container's first invocation
+```
+
+A phase that does not appear did not run: no `settings` line means the container
+already had them cached. `cold` vs `warm` matters because the settings cache lives
+**per container**, and Lambda@Edge cannot be pre-warmed — with low traffic, many
+visitors land on a cold container and pay the full chain.
+
+Turning it on, depending on how you installed:
+
+- **Path A (Secrets Manager)**: add `"debug": true` to the `vqueue/connector`
+  secret. The functions pick it up within 5 minutes.
+- **Path B (your own build)**: rebuild with `--debug`.
+
+These lines are **per request**: turn debug off when you are done measuring.
+
 ### Deleting the stack
 
 A Lambda@Edge function can't be deleted while CloudFront has it attached, and its
