@@ -70,7 +70,7 @@ const config = UNCONFIGURED ? null : {
     tcToken: typeof args["tc-token"] === "string" ? args["tc-token"] : "",
     tcTimeoutMs: 800,
     settingsTtlMs: 30_000,
-    settingsTimeoutMs: 1_500,
+    settingsTimeoutMs: 3_000,
     verifyTimeoutMs: 2_000,
     deadlineMs: 4_000,
     debug: args.debug === true,

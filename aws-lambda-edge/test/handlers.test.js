@@ -15,7 +15,7 @@ vi.mock("../src/generated-config.js", () => ({
         privateKey: SECRET,
         adminHost: "admin.test",
         settingsTtlMs: 30000,
-        settingsTimeoutMs: 1500,
+        settingsTimeoutMs: 3000,
         verifyTimeoutMs: 2000,
         deadlineMs: 150,
         debug: false,

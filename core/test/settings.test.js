@@ -92,3 +92,71 @@ describe("settings — parámetros del lazo", () => {
         expect(settings.rules[0]).toMatchObject({ threshold: 100, max_load: 500, tolerance: 0.8, buy_time: 600 });
     });
 });
+
+describe("settings — stale-while-revalidate", () => {
+    it("vencido pero no rancio: sirve la copia vieja y refresca aparte", async () => {
+        const c = clock();
+        let release;
+        const fetchImpl = vi.fn()
+            .mockImplementationOnce(async () => new Response(JSON.stringify(BODY()), { status: 200 }))
+            .mockImplementationOnce(() => new Promise((resolve) => {
+                release = () => resolve(new Response(JSON.stringify(BODY({ cookie_lifetime: 900 })), { status: 200 }));
+            }));
+        const config = { client: "swr", settingsTtlMs: 1000 };
+        const deps = { sortRules, logger, now: c.now, fetchImpl };
+
+        const first = await getSettings(config, deps);
+        c.advance(2000); // vencido
+
+        // No espera al fetch en vuelo: vuelve con la copia vieja al instante.
+        const stale = await getSettings(config, deps);
+        expect(stale).toBe(first);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+        // Mientras el refresco sigue en vuelo, tampoco se dispara otro.
+        expect(await getSettings(config, deps)).toBe(first);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+        release();
+        await new Promise((r) => setTimeout(r, 0));
+        expect((await getSettings(config, deps)).cookieLifetime).toBe(900);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it("rancio (más de cinco minutos) vuelve a bloquear hasta tener una copia fresca", async () => {
+        const c = clock();
+        const fetchImpl = vi.fn()
+            .mockImplementationOnce(async () => new Response(JSON.stringify(BODY()), { status: 200 }))
+            .mockImplementationOnce(async () => new Response(JSON.stringify(BODY({ cookie_lifetime: 900 })), { status: 200 }));
+        const config = { client: "old", settingsTtlMs: 1000 };
+        const deps = { sortRules, logger, now: c.now, fetchImpl };
+
+        await getSettings(config, deps);
+        c.advance(301_000);
+
+        expect((await getSettings(config, deps)).cookieLifetime).toBe(900);
+    });
+
+    it("si el refresco de fondo falla, la copia vieja sigue valiendo y no se martilla la API", async () => {
+        const c = clock();
+        const fetchImpl = vi.fn()
+            .mockImplementationOnce(async () => new Response(JSON.stringify(BODY()), { status: 200 }))
+            .mockImplementation(async () => { throw new Error("ECONNRESET"); });
+        const config = { client: "bg", settingsTtlMs: 1000 };
+        const deps = { sortRules, logger, now: c.now, fetchImpl };
+
+        const first = await getSettings(config, deps);
+        c.advance(2000);
+
+        expect(await getSettings(config, deps)).toBe(first);
+        await new Promise((r) => setTimeout(r, 0)); // el refresco falló y marcó la degradación
+        expect(await getSettings(config, deps)).toBe(first);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it("sin copia previa se espera al fetch, como siempre", async () => {
+        const fetchImpl = ok(BODY());
+        const s = await getSettings({ client: "cold" }, { sortRules, logger, fetchImpl });
+        expect(s.rules).toHaveLength(1);
+    });
+});

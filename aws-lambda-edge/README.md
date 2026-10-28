@@ -194,6 +194,15 @@ timeout CloudFront returns a 503 to the visitor. Measured on a real function:
 
 That's why the connector has a total budget of 4 s: if something hangs (the secret,
 the settings), it lets the visitor through instead of letting the timeout expire.
+The settings fetch itself waits up to 3 s (`settingsTimeoutMs`): a shorter value
+makes the first visitor of each container pass unprotected, because the cold fetch
+gets aborted and the failure is cached for 5 s. Once a container has a copy, an
+expired one is served while the refresh runs, so only that first request pays.
+
+The first request of a container pays this once per CloudFront edge location and
+again after the container is recycled. Nothing in the connector can shorten it: the
+cost is the first network call of a fresh Node process at 128 MB, not module
+initialization (~120 ms) nor the Admin API (~300 ms warm).
 And that's why it reads the secret with a hand-signed request instead of the AWS SDK,
 whose import alone takes ~2.5 s at 128 MB.
 

@@ -17,7 +17,13 @@ const DEFAULT_TTL_MS = 30_000;
 // Vida de una entrada servida en modo degradado tras un fallo: corta, para
 // reintentar pronto, pero suficiente para no castigar cada request.
 const STALE_TTL_MS = 5_000;
-const DEFAULT_TIMEOUT_MS = 1_500;
+// Hasta qué edad una copia vencida se sirve sin esperar al refresco.
+const MAX_STALE_MS = 300_000;
+// La primera llamada de red de un contenedor Lambda@Edge frío a 128 MB tarda
+// 1.5-2 s (medido: 1.7 s). Con 1500 ese fetch se abortaba y el primer visitante,
+// y los 5 s de negative cache que siguen, pasaban sin protección. Con 3000 el
+// fetch frío termina; el deadline de 4 s del handler sigue evitando el 503.
+const DEFAULT_TIMEOUT_MS = 3_000;
 
 // Mismos límites que el Worker (`resolveCookieTtl`) y el JS adapter: un valor
 // inválido o no positivo cae al default, y nada supera las 24h.
@@ -27,7 +33,7 @@ export const MAX_COOKIE_LIFETIME = 86_400;
 // Estado por contenedor, UNA entrada por endpoint de settings. Un proceso Node
 // puede alojar más de un guard (dos clientes, dos admins): con un único slot
 // global, el segundo guard leería los settings del primero.
-const cache = new Map(); // settingsUrl -> { settings, expire, inflight }
+const cache = new Map(); // settingsUrl -> { settings, loadedAt, expire, inflight }
 
 // Solo para tests.
 export function _resetSettingsCache() {
@@ -69,14 +75,22 @@ export async function getSettings(config, { sortRules, logger, now = Date.now, f
     const url = settingsUrl(config);
     let entry = cache.get(url);
     if (!entry) {
-        entry = { settings: null, expire: 0, inflight: null };
+        entry = { settings: null, loadedAt: 0, expire: 0, inflight: null };
         cache.set(url, entry);
     }
 
     // `expire` también acota el backoff tras un fallo: con settings en null,
     // devolver null sin ir a la red es la negative cache.
-    if (now() < entry.expire) return entry.settings;
-    if (entry.inflight) return entry.inflight;
+    const t = now();
+    if (t < entry.expire) return entry.settings;
+
+    // Stale-while-revalidate: con una copia vencida pero no rancia, se sirve esa
+    // al toque y el refresco corre aparte. Sin esto, un request cada `ttl` por
+    // proceso pagaba el round trip completo (300-1500 ms medidos en Lambda@Edge).
+    // Pasada la ventana rancia se vuelve a bloquear: una config de hace cinco
+    // minutos ya no es "un poco vieja".
+    const stale = entry.settings && t - entry.loadedAt < MAX_STALE_MS;
+    if (entry.inflight) return stale ? entry.settings : entry.inflight;
 
     const ttl = Number(config.settingsTtlMs) || DEFAULT_TTL_MS;
     const timeout = Number(config.settingsTimeoutMs) || DEFAULT_TIMEOUT_MS;
@@ -120,15 +134,21 @@ export async function getSettings(config, { sortRules, logger, now = Date.now, f
 
         done("ok");
         entry.settings = settings;
-        entry.expire = now() + ttl;
+        entry.loadedAt = now();
+        entry.expire = entry.loadedAt + ttl;
         logger?.log?.(`[settings] loaded ${settings.rules.length} rules`);
         return settings;
     })();
 
-    entry.inflight = load;
-    try {
-        return await load;
-    } finally {
+    // El refresco se desengancha solo: con stale-while-revalidate puede no haber
+    // nadie esperándolo. `load` nunca rechaza (todo fallo pasa por `degrade`).
+    entry.inflight = load.finally(() => {
         entry.inflight = null;
-    }
+    });
+
+    // En Lambda@Edge el contenedor se congela al responder y el fetch queda a
+    // medias; lo termina la invocación siguiente, que encuentra el `inflight` ya
+    // empezado en vez de arrancar de cero. En Node y en el Worker termina solo.
+    if (stale) return entry.settings;
+    return entry.inflight;
 }

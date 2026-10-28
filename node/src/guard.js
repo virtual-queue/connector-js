@@ -15,7 +15,7 @@ import { parseCookies, serializeCookie, appendSetCookie } from "./cookies.js";
 const DEFAULTS = {
     adminHost: "clients.virtual-queue.com",
     settingsTtlMs: 30_000,
-    settingsTimeoutMs: 1_500,
+    settingsTimeoutMs: 3_000,
     verifyTimeoutMs: 2_000,
     secureCookies: true,
     debug: false,

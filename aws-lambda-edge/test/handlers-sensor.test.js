@@ -16,7 +16,7 @@ vi.mock("../src/generated-config.js", () => ({
         tcToken: "vqtc_orome_0123456789",
         tcTimeoutMs: 100,
         settingsTtlMs: 30000,
-        settingsTimeoutMs: 1500,
+        settingsTimeoutMs: 3000,
         verifyTimeoutMs: 2000,
         deadlineMs: 150,
         debug: false,

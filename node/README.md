@@ -63,8 +63,10 @@ to tell apart from the rest:
 [timing] decide 1502ms redirect  ← the whole decision, including the waits above
 ```
 
-The settings cache lives in the process, so only the first request after boot (and
-one every `settingsTtlMs`) pays for `settings`.
+The settings cache lives in the process, so only the first request after boot pays
+for `settings`. When the cached copy expires (`settingsTtlMs`, 30 s) it is still
+served while the refresh runs in the background, so no later request waits for the
+network; only a copy older than five minutes blocks again.
 
 A phase that does not appear did not run: no `settings` line means they were
 already cached. These lines are **per request**: turn debug off when you are done

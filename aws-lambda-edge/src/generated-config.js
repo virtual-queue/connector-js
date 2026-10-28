@@ -17,7 +17,7 @@ export const CONFIG = {
     tcToken: "__VQ_TC_TOKEN__",
     tcTimeoutMs: 800,
     settingsTtlMs: 30000,
-    settingsTimeoutMs: 1500,
+    settingsTimeoutMs: 3000,
     verifyTimeoutMs: 2000,
     // Presupuesto total del viewer-request antes de soltar al visitante (el timeout
     // de la función es 5 s).
