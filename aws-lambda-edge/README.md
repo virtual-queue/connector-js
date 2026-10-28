@@ -197,7 +197,10 @@ the settings), it lets the visitor through instead of letting the timeout expire
 The settings fetch itself waits up to 3 s (`settingsTimeoutMs`): a shorter value
 makes the first visitor of each container pass unprotected, because the cold fetch
 gets aborted and the failure is cached for 5 s. Once a container has a copy, an
-expired one is served while the refresh runs, so only that first request pays.
+expired one is served while the refresh runs. A container is frozen as soon as it
+answers, so the refresh only finishes if the next request arrives within
+`settingsTimeoutMs`; with sparser traffic that next request waits for a fresh copy
+instead (~300–700 ms, once every `settingsTtlMs`).
 
 The first request of a container pays this once per CloudFront edge location and
 again after the container is recycled. Nothing in the connector can shorten it: the

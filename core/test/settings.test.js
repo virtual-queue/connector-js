@@ -137,7 +137,7 @@ describe("settings — stale-while-revalidate", () => {
         expect((await getSettings(config, deps)).cookieLifetime).toBe(900);
     });
 
-    it("si el refresco de fondo falla, la copia vieja sigue valiendo y no se martilla la API", async () => {
+    it("si el refresco de fondo falla, el próximo request espera uno nuevo y recién ahí se cachea el fallo", async () => {
         const c = clock();
         const fetchImpl = vi.fn()
             .mockImplementationOnce(async () => new Response(JSON.stringify(BODY()), { status: 200 }))
@@ -149,9 +149,57 @@ describe("settings — stale-while-revalidate", () => {
         c.advance(2000);
 
         expect(await getSettings(config, deps)).toBe(first);
-        await new Promise((r) => setTimeout(r, 0)); // el refresco falló y marcó la degradación
+        await new Promise((r) => setTimeout(r, 0)); // el refresco de fondo falló
+
+        // Este espera su propio fetch; falla también y sirve la copia vieja.
+        expect(await getSettings(config, deps)).toBe(first);
+        expect(fetchImpl).toHaveBeenCalledTimes(3);
+
+        // Ahora sí el fallo queda cacheado: no se martilla la API.
+        expect(await getSettings(config, deps)).toBe(first);
+        expect(fetchImpl).toHaveBeenCalledTimes(3);
+    });
+
+    it("Lambda congelada: un refresco abortado al descongelar no deja la copia vieja pegada", async () => {
+        const c = clock();
+        const fetchImpl = vi.fn()
+            .mockImplementationOnce(async () => new Response(JSON.stringify(BODY()), { status: 200 }))
+            .mockImplementationOnce(async () => { throw new Error("The operation was aborted due to timeout"); })
+            .mockImplementationOnce(async () => new Response(JSON.stringify(BODY({ cookie_lifetime: 900 })), { status: 200 }));
+        const config = { client: "abort", settingsTtlMs: 1000 };
+        const deps = { sortRules, logger, now: c.now, fetchImpl };
+
+        const first = await getSettings(config, deps);
+        c.advance(2000);
+        expect(await getSettings(config, deps)).toBe(first); // arranca el refresco de fondo
+        await new Promise((r) => setTimeout(r, 0)); // se aborta al descongelar
+
+        c.advance(10_000);
+        expect((await getSettings(config, deps)).cookieLifetime).toBe(900);
+    });
+
+    it("Lambda congelada: un refresco en vuelo más viejo que el timeout se abandona y se espera uno nuevo", async () => {
+        const c = clock();
+        const fetchImpl = vi.fn()
+            .mockImplementationOnce(async () => new Response(JSON.stringify(BODY()), { status: 200 }))
+            .mockImplementationOnce(() => new Promise(() => { })) // congelado: nunca vuelve
+            .mockImplementationOnce(async () => new Response(JSON.stringify(BODY({ cookie_lifetime: 900 })), { status: 200 }));
+        const config = { client: "frozen", settingsTtlMs: 1000, settingsTimeoutMs: 3000 };
+        const deps = { sortRules, logger, now: c.now, fetchImpl };
+
+        const first = await getSettings(config, deps);
+        c.advance(2000);
+        expect(await getSettings(config, deps)).toBe(first);
+
+        // Dentro del timeout se sigue confiando en el refresco en vuelo.
+        c.advance(1000);
         expect(await getSettings(config, deps)).toBe(first);
         expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+        // Pasado el timeout se lo da por muerto.
+        c.advance(5000);
+        expect((await getSettings(config, deps)).cookieLifetime).toBe(900);
+        expect(fetchImpl).toHaveBeenCalledTimes(3);
     });
 
     it("sin copia previa se espera al fetch, como siempre", async () => {

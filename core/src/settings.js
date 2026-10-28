@@ -33,7 +33,7 @@ export const MAX_COOKIE_LIFETIME = 86_400;
 // Estado por contenedor, UNA entrada por endpoint de settings. Un proceso Node
 // puede alojar más de un guard (dos clientes, dos admins): con un único slot
 // global, el segundo guard leería los settings del primero.
-const cache = new Map(); // settingsUrl -> { settings, loadedAt, expire, inflight }
+const cache = new Map(); // settingsUrl -> { settings, loadedAt, expire, inflight, inflightAt, gen, blockNext }
 
 // Solo para tests.
 export function _resetSettingsCache() {
@@ -75,7 +75,7 @@ export async function getSettings(config, { sortRules, logger, now = Date.now, f
     const url = settingsUrl(config);
     let entry = cache.get(url);
     if (!entry) {
-        entry = { settings: null, loadedAt: 0, expire: 0, inflight: null };
+        entry = { settings: null, loadedAt: 0, expire: 0, inflight: null, inflightAt: 0, gen: 0, blockNext: false };
         cache.set(url, entry);
     }
 
@@ -90,10 +90,22 @@ export async function getSettings(config, { sortRules, logger, now = Date.now, f
     // Pasada la ventana rancia se vuelve a bloquear: una config de hace cinco
     // minutos ya no es "un poco vieja".
     const stale = entry.settings && t - entry.loadedAt < MAX_STALE_MS;
-    if (entry.inflight) return stale ? entry.settings : entry.inflight;
-
     const ttl = Number(config.settingsTtlMs) || DEFAULT_TTL_MS;
     const timeout = Number(config.settingsTimeoutMs) || DEFAULT_TIMEOUT_MS;
+
+    // Un refresco en vuelo hace más que el timeout quedó congelado con el
+    // contenedor (Lambda@Edge): su timer cuenta tiempo de pared, así que al
+    // descongelarse se aborta solo. Se lo abandona y este request trae la config
+    // esperando, porque otro refresco de fondo se congelaría igual.
+    let blocking = !stale || entry.blockNext;
+    if (entry.inflight) {
+        if (t - entry.inflightAt < timeout) return stale ? entry.settings : entry.inflight;
+        entry.gen++;
+        entry.inflight = null;
+        blocking = true;
+    }
+    const gen = entry.gen;
+    const current = () => entry.gen === gen;
 
     // Solo se mide el refresco real: un hit de cache no llega hasta acá, y esa
     // ausencia de línea ya dice que el contenedor venía tibio.
@@ -102,10 +114,24 @@ export async function getSettings(config, { sortRules, logger, now = Date.now, f
     // Ante un fallo servimos la última config buena aunque esté vencida: es
     // preferible a dejar el origen sin protección por un hipo de red. Y se
     // cachea el fallo unos segundos: sin eso, cada request pagaría el timeout.
+    //
+    // Un refresco de fondo que falla no cachea el fallo: marca que el próximo
+    // request espere. Si no, un refresco congelado y abortado al descongelar
+    // dejaría 5 s de copia vieja, el siguiente se congelaría igual, y con tráfico
+    // espaciado la config no se refrescaría hasta volverse rancia. Tampoco se
+    // avisa con warn: en Lambda@Edge es lo normal tras cada TTL con tráfico
+    // espaciado, y una caída real igual avisa en el fetch que espera.
     const degrade = (reason) => {
+        if (!current()) return entry.settings;
         done(reason);
-        logger?.warn?.(`[settings] ${reason}`);
-        entry.expire = now() + STALE_TTL_MS;
+        if (blocking) {
+            logger?.warn?.(`[settings] ${reason}`);
+            entry.blockNext = false;
+            entry.expire = now() + STALE_TTL_MS;
+        } else {
+            logger?.log?.(`[settings] background refresh: ${reason}`);
+            entry.blockNext = true;
+        }
         return entry.settings;
     };
 
@@ -131,24 +157,27 @@ export async function getSettings(config, { sortRules, logger, now = Date.now, f
 
         const settings = normalize(body?.data, sortRules);
         if (!settings) return degrade("unexpected body");
+        if (!current()) return settings;
 
         done("ok");
         entry.settings = settings;
         entry.loadedAt = now();
         entry.expire = entry.loadedAt + ttl;
+        entry.blockNext = false;
         logger?.log?.(`[settings] loaded ${settings.rules.length} rules`);
         return settings;
     })();
 
     // El refresco se desengancha solo: con stale-while-revalidate puede no haber
     // nadie esperándolo. `load` nunca rechaza (todo fallo pasa por `degrade`).
+    entry.inflightAt = t;
     entry.inflight = load.finally(() => {
-        entry.inflight = null;
+        if (current()) entry.inflight = null;
     });
 
-    // En Lambda@Edge el contenedor se congela al responder y el fetch queda a
-    // medias; lo termina la invocación siguiente, que encuentra el `inflight` ya
-    // empezado en vez de arrancar de cero. En Node y en el Worker termina solo.
-    if (stale) return entry.settings;
+    // En Node y en el Worker el refresco de fondo termina solo. En Lambda@Edge
+    // termina solo si el siguiente request llega antes del timeout; si no, ese
+    // request lo abandona y espera uno nuevo (ver arriba).
+    if (!blocking) return entry.settings;
     return entry.inflight;
 }
