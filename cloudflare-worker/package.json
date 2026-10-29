@@ -1,6 +1,6 @@
 {
 	"name": "@vqueue/connector-cloudflare-worker",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"private": true,
 	"type": "module",
 	"description": "Conector de VQueue para Cloudflare Workers. Protección de cola que el cliente instala en su propia cuenta de Cloudflare.",

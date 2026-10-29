@@ -2,10 +2,9 @@
 
 Queue protection for customers who want to run it in **their own Cloudflare
 account**. It does what the JS adapter does (rule-based protection), but on the
-server side: a visitor can't bypass it by disabling JavaScript. It has no load
-sensor: a rule with a traffic threshold queues every visitor from this Worker (the
-automatic activation on Cloudflare runs in VirtualQueue's managed edge; on AWS, in
-the Lambda@Edge connector).
+server side: a visitor can't bypass it by disabling JavaScript. With the traffic
+counter token, rules with a threshold turn the queue on and off by themselves (see
+*Automatic activation*).
 
 It is a single **Cloudflare Worker** attached to a route of your zone.
 
@@ -24,7 +23,10 @@ It is a single **Cloudflare Worker** attached to a route of your zone.
    rule 1.
 4. **Pass** — verifies the signature **offline** with your company's `private_key`.
    It doesn't call VirtualQueue on every request.
-5. **Sliding renewal** — while the visitor keeps browsing, the pass is extended.
+5. **Automatic activation** — a rule with a threshold or a max load only queues
+   while VirtualQueue's traffic counter says the event is active. A rule without
+   thresholds queues every visitor without a pass, as before.
+6. **Sliding renewal** — while the visitor keeps browsing, the pass is extended.
    A Worker sees the origin's response, so this needs no second function.
 
 Everything fails open: with no config (or the example values left in place), an
@@ -38,6 +40,38 @@ queue. A connector that breaks your site is worse than one that doesn't queue.
 other methods, paths under `/api/`, static assets and WebSockets always pass. If
 your purchase is confirmed with a POST or under `/api/`, check the pass (or the
 token) in that endpoint too.
+
+## Automatic activation
+
+Each rule is **manual** or **automatic**, and you switch between the two from the
+VirtualQueue panel, without redeploying the Worker:
+
+| Rule | Behaviour |
+|---|---|
+| No threshold and no max load | Manual: every visitor without a pass goes to the waiting room. |
+| A threshold (arrivals/s) or a max load (concurrent buyers) | Automatic: visitors pass straight through until the traffic crosses the threshold; then the queue turns on, and it turns off again when the peak is over. |
+
+Automatic rules need the **Traffic counter token** of your company (company
+settings in the panel), stored as the `TC_TOKEN` secret. With it, every Worker
+isolate counts the visitors that reach an automatic rule without a pass and, once
+per second, sends the **totals** (arrivals and distinct visitors, deduplicated by
+IP + User-Agent inside the isolate) to `tc.virtual-queue.com`. The reply carries
+the event state, which the isolate applies for the next second. The traffic
+counter never receives paths, IPs, cookies or any per-visitor data: one line of
+numbers per isolate per second, whatever your traffic is.
+
+Failure policy, in the same spirit as the rest of the connector:
+
+- Counter unreachable or slow (800 ms timeout): the last known state is kept for
+  60 s, then visitors pass (fail-open). The counter can never take your site down.
+- Automatic rule but no `TC_TOKEN`: the rule behaves as manual (queues everyone) and
+  the logs say so once every 10 minutes.
+- `TC_TOKEN` rejected by the counter (typo, rotated): same thing, queue everyone and
+  log an error. A wrong token never disables protection silently.
+
+Cost: the request that crosses the one-second tick waits for one extra network
+call; the other requests of that second don't touch the network. Only visitors
+**without a pass** are counted, so visitors already admitted never pay it.
 
 ## Installation
 
@@ -71,6 +105,10 @@ Both are stored as Worker **secrets** in your account, so later deploys don't re
 them. If you leave the example values, the Worker lets everything through and logs
 why.
 
+If some rule has a threshold or a max load, add the `TC_TOKEN` secret afterwards
+(Worker → **Settings** → **Variables and Secrets** → **Add**, type *Secret*), or
+with `npx wrangler secret put TC_TOKEN`.
+
 ### B) From the command line
 
 ```bash
@@ -79,6 +117,7 @@ cd connector-js/cloudflare-worker
 npm install
 npx wrangler secret put CLIENT
 npx wrangler secret put PRIVATE_KEY
+npx wrangler secret put TC_TOKEN   # optional, only for automatic rules
 npx wrangler deploy
 ```
 
@@ -99,7 +138,9 @@ active rule, everything passes straight through.
 |---|---|---|
 | `CLIENT` | secret | Your company subdomain in VirtualQueue |
 | `PRIVATE_KEY` | secret | Your company `private_key`; verifies the pass offline |
+| `TC_TOKEN` | secret, optional | Your *Traffic counter token*; enables automatic rules |
 | `ADMIN_HOST` | variable, optional | Defaults to `clients.virtual-queue.com` |
+| `TC_URL` | variable, optional | Defaults to `https://tc.virtual-queue.com` |
 | `DEBUG` | variable, optional | `"true"` for verbose logs (per request) |
 
 **Rotating the key.** Ask VirtualQueue for the new key, then run
@@ -138,9 +179,10 @@ measuring.
 | Rules + queue URL | `GET https://<admin>/api/v1/adapter/<client>/settings` | **None** (public, cacheable) |
 | Token exchange | `GET <queue_url>/api/v1/queue/verify?token=` | None |
 | Pass | `vq_pass_<event_id>` cookie | HMAC-SHA256 with `private_key`, offline |
+| Traffic totals + event state | `POST https://tc.virtual-queue.com/v1/ingest`, one `v1` line per isolate per second | Company *Traffic counter token*, inside the line |
 
 The connector uses the **public** settings endpoint. It never needs a platform
-token: nothing in this repository asks you for one.
+token: the traffic counter token is your company's own, from the panel.
 
 ## Keeping `vendor/` in sync
 

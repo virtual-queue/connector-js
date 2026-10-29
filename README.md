@@ -34,9 +34,9 @@ your CloudFront distribution. See the [full guide](aws-lambda-edge/README.md).
    the queue, verifies the pass cookie. Without a valid pass, it redirects to the
    waiting room.
 4. A rule with a traffic threshold is **automatic**: it only queues while
-   VirtualQueue's traffic counter says the event is active (Lambda@Edge connector;
-   the counter receives totals, never visitor data). A rule without thresholds
-   queues every visitor without a pass.
+   VirtualQueue's traffic counter says the event is active (Lambda@Edge and
+   Cloudflare Worker connectors; the counter receives totals, never visitor data).
+   A rule without thresholds queues every visitor without a pass.
 5. While the visitor keeps browsing, the pass is renewed.
 
 **Everything fails open.** With no settings, no API, or an incomplete config, the

@@ -5,9 +5,10 @@
 // espera. A diferencia de Lambda@Edge, un Worker ve la respuesta del origin, así
 // que la renovación deslizante del pase se hace acá mismo, sin segunda función.
 //
-// Solo protección MANUAL: aplica las reglas de acceso; no mide tráfico. Una regla
-// con umbrales encola siempre desde este Worker (el core avisa en los logs); la
-// activación automática en Cloudflare la hace el Worker gestionado de VQueue.
+// Activación automática: con TC_TOKEN, las reglas con umbrales cuentan llegadas
+// por isolate y, una vez por segundo, el request que cruza el tick manda los
+// totales al TC y toma el estado del evento (ver vendor/tc.js). Sin TC_TOKEN no
+// hay sensor y esas reglas encolan siempre (el core avisa en los logs).
 // Todo falla abierto: sin config, sin API o con un error cualquiera, el visitante
 // pasa. Un conector que rompe el sitio del cliente es peor que uno que no encola.
 
@@ -16,12 +17,17 @@ import { buildLogger, validateConfig } from "../vendor/config.js";
 import { logPhase } from "../vendor/timing.js";
 import { decide } from "../vendor/decide.js";
 import { getSettings } from "../vendor/settings.js";
+import { createSensor } from "../vendor/tc.js";
 import { cookieHeader, parseCookies } from "./cookies.js";
 
 const DEFAULT_ADMIN_HOST = "clients.virtual-queue.com";
 
+// Valor de ejemplo de .dev.vars.example: cuenta como "sin token".
+const EXAMPLE_TC_TOKEN = "your-tc-token";
+
 // Presupuesto total de la decisión. Las llamadas internas ya tienen su timeout
-// (settings 1.5 s, verify 2 s); esto acota el peor caso de ambas juntas.
+// (settings 3 s, verify 2 s, sensor 0.8 s); esto acota el peor caso. Lo que
+// queda en vuelo al vencer sigue en `ctx.waitUntil` y llena los caches.
 const DEADLINE_MS = 3_500;
 
 // Los settings son públicos y cacheables (`public, max-age=30, s-maxage=60`).
@@ -38,16 +44,41 @@ const isDebug = (env) => env?.DEBUG === true || env?.DEBUG === "true";
 let configErrorLogged = false;
 
 export function readConfig(env) {
+    const tcToken = typeof env?.TC_TOKEN === "string" ? env.TC_TOKEN.trim() : "";
     const config = {
         client: typeof env?.CLIENT === "string" ? env.CLIENT.trim() : env?.CLIENT,
         privateKey: env?.PRIVATE_KEY,
         adminHost: env?.ADMIN_HOST || DEFAULT_ADMIN_HOST,
+        // Opcionales: sin tcToken no hay sensor (tc.js usa su URL por defecto).
+        tcToken: tcToken === EXAMPLE_TC_TOKEN ? "" : tcToken,
+        ...(env?.TC_URL ? { tcUrl: env.TC_URL } : {}),
         debug: isDebug(env),
     };
 
     // validateConfig rechaza vacíos y los valores de ejemplo de .dev.vars.example.
+    // El tcToken no se valida: un token mal cargado no apaga el conector.
     const { errors } = validateConfig(config);
     return { config, errors };
+}
+
+// El sensor vive con el isolate (sus contadores y el estado cacheado). La config
+// se relee en cada request, así que se rearma solo si cambia lo que lo define.
+let sensor = null;
+let sensorKey = null;
+function sensorFor(config, logger) {
+    const key = `${config.tcToken}|${config.tcUrl || ""}|${config.debug}`;
+    if (key !== sensorKey) {
+        // fetch se resuelve en cada llamada, no al crear el sensor.
+        sensor = createSensor(config, { logger, fetchImpl: (url, init) => fetch(url, init) });
+        sensorKey = key;
+    }
+    return sensor;
+}
+
+// Solo para tests.
+export function _resetSensor() {
+    sensor = null;
+    sensorKey = null;
 }
 
 function toRequest(request, url) {
@@ -82,7 +113,7 @@ async function withRenewal(originResponse, renew) {
     return response;
 }
 
-async function decideWithDeadline(req, config, logger) {
+async function decideWithDeadline(req, config, logger, ctx) {
     let timer;
     const deadline = new Promise((resolve) => {
         timer = setTimeout(() => {
@@ -91,14 +122,18 @@ async function decideWithDeadline(req, config, logger) {
         }, DEADLINE_MS);
     });
 
+    const decision = decide(req, config, {
+        logger,
+        getSettings: () => getSettings(config, { sortRules, logger, fetchImpl: settingsFetch }),
+        sensor: sensorFor(config, logger),
+    });
+    // Si vence el presupuesto, el isolate cancelaría lo que quedó en vuelo al
+    // responder. Sin esto, un tick del sensor cortado a mitad dejaría su
+    // `inflight` sin resolver y los próximos requests esperándolo.
+    ctx?.waitUntil?.(decision.catch(() => { }));
+
     try {
-        return await Promise.race([
-            decide(req, config, {
-                logger,
-                getSettings: () => getSettings(config, { sortRules, logger, fetchImpl: settingsFetch }),
-            }),
-            deadline,
-        ]);
+        return await Promise.race([decision, deadline]);
     } finally {
         clearTimeout(timer);
     }
@@ -131,7 +166,7 @@ export default {
                 }
             } else {
                 const url = new URL(request.url);
-                decision = await decideWithDeadline(toRequest(request, url), config, logger);
+                decision = await decideWithDeadline(toRequest(request, url), config, logger, ctx);
             }
         } catch (err) {
             // Red de seguridad final: cualquier excepción deja pasar al visitante.

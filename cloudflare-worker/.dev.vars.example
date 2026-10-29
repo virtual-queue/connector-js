@@ -2,3 +2,7 @@
 CLIENT=your-subdomain
 # private_key de tu compañía en VirtualQueue. Pídela a support@virtual-queue.com.
 PRIVATE_KEY=your-private-key
+# Opcional: token del traffic counter (ajustes de la compañía en el panel). Solo
+# hace falta si alguna regla tiene umbral o carga máxima. Se agrega después del
+# deploy con `npx wrangler secret put TC_TOKEN`.
+# TC_TOKEN=your-tc-token
