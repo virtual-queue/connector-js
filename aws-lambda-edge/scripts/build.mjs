@@ -1,13 +1,13 @@
-// Empaqueta las dos lambdas con la config del cliente horneada adentro.
+// Empaqueta la lambda con la config del cliente horneada adentro.
 //
 // Lambda@Edge no soporta variables de entorno, así que el `client` y el
 // `privateKey` tienen que viajar dentro del bundle. Este script los inyecta y
-// produce un .zip por función, listo para subir.
+// produce el .zip de la función, listo para subir.
 //
 //   node scripts/build.mjs --client orome --private-key <clave> [--tc-token <token>] [--admin-host ...] [--debug]
 //   node scripts/build.mjs --unconfigured [--out dist]
 //
-// El resultado queda en dist/: viewer-request.zip y viewer-response.zip
+// El resultado queda en dist/: viewer-request.zip
 //
 // `--unconfigured` arma el bundle SIN datos del cliente: es el que se publica en
 // las releases y el que instala el template de CloudFormation, que guarda el
@@ -116,7 +116,6 @@ async function assertNoPlaceholders(outfile, name) {
 // Lo contrario para el bundle sin configurar: tiene que tener los placeholders
 // (para que arranque leyendo Secrets Manager) y NINGÚN dato de un cliente.
 async function assertUnconfigured(outfile, name) {
-    if (name !== "viewer-request") return; // viewer-response no usa la config
     const code = await readFile(outfile, "utf8");
     if (!code.includes("__VQ_PRIVATE_KEY__") || !code.includes("__VQ_TC_TOKEN__")) {
         throw new Error(`${name}: el bundle sin configurar perdió los placeholders`);
@@ -149,12 +148,10 @@ async function bundle(name) {
 
 await rm(DIST, { recursive: true, force: true });
 await mkdir(path.join(DIST, "viewer-request"), { recursive: true });
-await mkdir(path.join(DIST, "viewer-response"), { recursive: true });
 
 console.log(UNCONFIGURED
     ? "Empaquetando SIN configurar (la config se lee de Secrets Manager)"
     : `Empaquetando para client=${config.client} (admin: ${config.adminHost}, sensor: ${config.tcToken ? "sí" : "no"})`);
 await bundle("viewer-request");
-await bundle("viewer-response");
-console.log(`\nListo. Subí cada zip a su Lambda y asociá las funciones a la
-distribución de CloudFront en los eventos viewer-request y viewer-response.`);
+console.log(`\nListo. Subí el zip a su Lambda y asociá la función a la
+distribución de CloudFront en el evento viewer-request.`);

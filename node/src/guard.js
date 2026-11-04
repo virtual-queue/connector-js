@@ -4,10 +4,8 @@
 // conector de Lambda@Edge. Mismo core, mismas decisiones; solo cambia cómo entra
 // y sale el request.
 //
-// Dos ventajas sobre Lambda@Edge, que vienen de correr en un server normal:
-//   - Hay variables de entorno: la private_key no se hornea en ningún bundle.
-//   - La renovación deslizante se resuelve en una sola pasada; Lambda@Edge
-//     necesita una segunda función (viewer-response) para tocar la respuesta.
+// Ventaja sobre Lambda@Edge, que viene de correr en un server normal: hay
+// variables de entorno, así que la private_key no se hornea en ningún bundle.
 
 import { decide, validateConfig, buildLogger, sortRules, getSettings } from "@vqueue/connector-core";
 import { parseCookies, serializeCookie, appendSetCookie } from "./cookies.js";
@@ -84,13 +82,8 @@ export function createQueueGuard(options = {}) {
             return true;
         }
 
-        // Renovación deslizante: mientras el visitante navegue, el pase se
-        // extiende. Sin esto el pase es un presupuesto fijo desde que salió
-        // de la fila y una compra lenta vuelve a la cola a mitad de camino.
-        if (decision.renew) {
-            appendSetCookie(res, serializeCookie(decision.renew, cookieOptions));
-        }
-
+        // "allow" no toca la respuesta: el pase no se renueva, dura
+        // cookie_lifetime desde que se emitió.
         return false;
     }
 
@@ -124,7 +117,7 @@ export function createQueueGuard(options = {}) {
         /**
          * Hook `onRequest` de Fastify. Usa la API de `reply` y no el
          * ServerResponse crudo: un `Set-Cookie` puesto en `reply.raw` lo pisa
-         * Fastify cuando la app setea el suyo (sesión), y perdería la renovación.
+         * Fastify cuando la app setea el suyo (sesión).
          */
         fastify() {
             return async (request, reply) => {
@@ -137,10 +130,6 @@ export function createQueueGuard(options = {}) {
                     reply.header("cache-control", "no-store");
                     reply.redirect(decision.location, 302);
                     return reply;
-                }
-
-                if (decision.renew) {
-                    reply.header("set-cookie", serializeCookie(decision.renew, cookieOptions));
                 }
             };
         },

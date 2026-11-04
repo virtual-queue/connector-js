@@ -1,6 +1,6 @@
 // Núcleo de decisión del conector. No sabe nada de AWS ni de CloudFront: recibe
-// un request normalizado y devuelve qué hacer. Los adaptadores (viewer-request /
-// viewer-response, o un ALB más adelante) solo traducen formatos.
+// un request normalizado y devuelve qué hacer. Los adaptadores (viewer-request
+// de Lambda@Edge, el SDK de Node, o un ALB más adelante) solo traducen formatos.
 //
 // Regla transversal: TODO falla abierto. Si no se pueden traer los settings, si
 // la API de verify no responde, si el pase está roto — el visitante pasa. Un
@@ -195,7 +195,7 @@ async function runExchange(token, settings, { logger, fetchImpl = fetch, verifyT
  * dedupe). Sin sensor, una regla automática encola siempre y lo avisa.
  *
  * @returns {{type:"bypass"}
- *         | {type:"allow", renew?: {name:string, value:string, maxAge:number}}
+ *         | {type:"allow"}
  *         | {type:"redirect", location:string, cookies:Array}}
  */
 export async function decide(req, config, deps) {
@@ -296,17 +296,10 @@ async function runDecision(req, config, deps) {
     //-----------------------------------------
     const pass = hasValidPassFor(req.cookies, eventId, config.privateKey);
     if (pass.ok) {
-        // Renovación deslizante: mientras el visitante siga navegando, el pase se
-        // extiende. Sin esto es un presupuesto fijo desde que salió de la fila y
-        // cualquier compra más lenta que el promedio vuelve a la cola.
-        return {
-            type: "allow",
-            renew: {
-                name: passCookieName(eventId),
-                value: req.cookies[passCookieName(eventId)],
-                maxAge: settings.cookieLifetime,
-            },
-        };
+        // El pase no se renueva: la cookie dura exactamente cookie_lifetime desde
+        // que el visitante salió de la fila, siga navegando o no. Es un
+        // presupuesto fijo para comprar; una compra más lenta vuelve a la cola.
+        return { type: "allow" };
     }
 
     if (keyMismatchActive(config.privateKey)) {

@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  VQueue connector for CloudFront (Lambda@Edge). Creates the two functions, their
+  VQueue connector for CloudFront (Lambda@Edge). Creates the function, its
   role, and a Secrets Manager secret holding your subdomain, private key and
   (optionally) your traffic counter token for automatic activation.
-  After the stack is created, associate the two function versions listed in
-  Outputs with a CloudFront behavior (viewer-request and viewer-response).
+  After the stack is created, associate the function version listed in
+  Outputs with a CloudFront behavior (viewer-request).
 
 # Lambda@Edge only deploys from us-east-1. Fail early with a clear message
 # instead of a cryptic error halfway through.
@@ -113,22 +113,6 @@ Resources:
         S3Key:
           Fn::Sub: releases/v${ReleaseVersion}/viewer-request.zip
 
-  ViewerResponseFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      Description: VQueue connector, viewer-response
-      Runtime: nodejs22.x
-      Handler: index.handler
-      MemorySize: 128
-      Timeout: 5
-      Role:
-        Fn::GetAtt: [ConnectorRole, Arn]
-      Code:
-        S3Bucket:
-          Ref: CodeBucket
-        S3Key:
-          Fn::Sub: releases/v${ReleaseVersion}/viewer-response.zip
-
   # Lambda@Edge cannot use $LATEST: CloudFront needs a published version. The
   # description carries the release so a new release publishes a new version
   # (a Version resource is otherwise not replaced when only the code changes).
@@ -140,23 +124,11 @@ Resources:
       Description:
         Fn::Sub: release ${ReleaseVersion}
 
-  ViewerResponseVersion:
-    Type: AWS::Lambda::Version
-    Properties:
-      FunctionName:
-        Ref: ViewerResponseFunction
-      Description:
-        Fn::Sub: release ${ReleaseVersion}
-
 Outputs:
   ViewerRequestArn:
     Description: Associate with your CloudFront behavior as the VIEWER REQUEST function.
     Value:
       Ref: ViewerRequestVersion
-  ViewerResponseArn:
-    Description: Associate with your CloudFront behavior as the VIEWER RESPONSE function.
-    Value:
-      Ref: ViewerResponseVersion
   NextStep:
     Description: What is left to do.
-    Value: In CloudFront, edit the behavior to protect, and add the two ARNs above as Function associations (Viewer request, Viewer response). Rules without thresholds queue every visitor; rules with a threshold or max load activate on their own when TcToken is set.
+    Value: In CloudFront, edit the behavior to protect, and add the ARN above as a Function association (Viewer request). Rules without thresholds queue every visitor; rules with a threshold or max load activate on their own when TcToken is set.

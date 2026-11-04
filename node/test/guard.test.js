@@ -127,8 +127,8 @@ describe("guard — decisiones", () => {
             fromNodeRequest(nodeReq({ cookie: `vq_pass_ev-42=${ELIXIR_PASS}` })),
         );
 
-        expect(decision.type).toBe("allow");
-        expect(decision.renew).toBeDefined();
+        // Sin `renew`: el pase no se reescribe mientras el visitante navega.
+        expect(decision).toEqual({ type: "allow" });
     });
 
     it("saltea assets sin tocar la red", async () => {
@@ -171,17 +171,15 @@ describe("guard — aplica sobre la respuesta", () => {
         expect(res.ended).toBe(true);
     });
 
-    it("renueva el pase sin cortar la cadena", async () => {
+    it("con allow no toca la respuesta ni corta la cadena", async () => {
         const g = guard();
         const res = nodeRes();
 
-        const handled = g.apply(
-            { type: "allow", renew: { name: "vq_pass_ev-42", value: "x", maxAge: 600 } },
-            res,
-        );
+        const handled = g.apply({ type: "allow" }, res);
 
         expect(handled).toBe(false);
-        expect(res.getHeader("Set-Cookie")[0]).toContain("vq_pass_ev-42=x");
+        expect(res.getHeader("Set-Cookie")).toBeUndefined();
+        expect(res.ended).toBe(false);
     });
 
     it("no pisa las cookies que ya puso la app del cliente", async () => {
@@ -189,7 +187,14 @@ describe("guard — aplica sobre la respuesta", () => {
         const res = nodeRes();
         res.setHeader("Set-Cookie", ["session=abc"]);
 
-        g.apply({ type: "allow", renew: { name: "vq_pass_ev-42", value: "x", maxAge: 600 } }, res);
+        g.apply(
+            {
+                type: "redirect",
+                location: "https://cola/queue/ev-42",
+                cookies: [{ name: "vq_target_ev-42", value: "/shop", maxAge: 60 }],
+            },
+            res,
+        );
 
         expect(res.getHeader("Set-Cookie")).toHaveLength(2);
         expect(res.getHeader("Set-Cookie")[0]).toBe("session=abc");
@@ -250,14 +255,15 @@ describe("guard — hook de Fastify", () => {
         expect(reply.headers["set-cookie"][0]).toContain("vq_target_ev-42=");
     });
 
-    it("renueva el pase por reply.header y sigue la cadena", async () => {
+    it("con pase válido sigue la cadena sin tocar la respuesta", async () => {
         const g = guard();
         const reply = fastifyReply();
 
         const result = await g.fastify()({ raw: nodeReq({ cookie: `vq_pass_ev-42=${ELIXIR_PASS}` }) }, reply);
 
         expect(result).toBeUndefined();
-        expect(reply.headers["set-cookie"][0]).toContain(`vq_pass_ev-42=${ELIXIR_PASS}`);
+        expect(reply.redirected).toBeNull();
+        expect(reply.headers).toEqual({});
     });
 });
 

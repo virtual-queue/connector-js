@@ -26,8 +26,9 @@ It is a single **Cloudflare Worker** attached to a route of your zone.
 5. **Automatic activation** — a rule with a threshold or a max load only queues
    while VirtualQueue's traffic counter says the event is active. A rule without
    thresholds queues every visitor without a pass, as before.
-6. **Sliding renewal** — while the visitor keeps browsing, the pass is extended.
-   A Worker sees the origin's response, so this needs no second function.
+6. **Fixed budget** — the pass cookie lasts exactly `cookie_lifetime` (10 minutes by
+   default) from the moment the visitor leaves the queue. It is never renewed while
+   they browse: a checkout slower than that goes back to the queue.
 
 Everything fails open: with no config (or the example values left in place), an
 unreachable rules endpoint, an unreachable or failing verify endpoint, or any

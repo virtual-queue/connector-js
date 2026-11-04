@@ -2,8 +2,8 @@
 //
 // Corre en CADA request de las rutas donde lo asocies. Decide si el visitante
 // pasa, si vuelve de la cola con un token para canjear, o si va a la sala de
-// espera. A diferencia de Lambda@Edge, un Worker ve la respuesta del origin, así
-// que la renovación deslizante del pase se hace acá mismo, sin segunda función.
+// espera. El pase se escribe una sola vez, al volver de la cola, y dura
+// exactamente cookie_lifetime: no se renueva mientras el visitante navega.
 //
 // Activación automática: con TC_TOKEN, las reglas con umbrales cuentan llegadas
 // por isolate y, una vez por segundo, el request que cruza el tick manda los
@@ -107,12 +107,6 @@ function redirectResponse(location, cookies, requestUrl) {
     return new Response(null, { status: 302, headers });
 }
 
-async function withRenewal(originResponse, renew) {
-    const response = new Response(originResponse.body, originResponse);
-    response.headers.append("Set-Cookie", cookieHeader(renew));
-    return response;
-}
-
 async function decideWithDeadline(req, config, logger, ctx) {
     let timer;
     const deadline = new Promise((resolve) => {
@@ -185,16 +179,6 @@ export default {
             }
         }
 
-        const originResponse = await fetch(request);
-        if (decision.type !== "allow" || !decision.renew) return originResponse;
-
-        try {
-            return await withRenewal(originResponse, decision.renew);
-        } catch (err) {
-            // Nunca romper la respuesta del origin por no poder renovar: en el
-            // peor caso el pase vence antes y el visitante vuelve a la cola.
-            console.error(`[vq] no se pudo renovar el pase: ${err?.stack || err}`);
-            return originResponse;
-        }
+        return fetch(request);
     },
 };

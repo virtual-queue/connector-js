@@ -2,8 +2,9 @@
 //
 // Corre en CADA request del visitante (antes del cache). Decide si el visitante
 // pasa, si vuelve de la cola con un token para canjear, o si va a la sala de
-// espera. La renovación deslizante del pase la hace viewer-response, porque
-// desde acá no se puede tocar una respuesta que todavía no existe.
+// espera. Es la única función del conector: el pase no se renueva mientras el
+// visitante navega (dura cookie_lifetime desde que se emitió), así que no hace
+// falta tocar la respuesta del origin y no hay viewer-response.
 //
 // Presupuesto: 5s de timeout y 1 MB. El camino caliente (visitante con pase
 // válido y config en memoria) no hace red: verifica el HMAC offline y sigue.
@@ -19,7 +20,7 @@ import { getSettings } from "@vqueue/connector-core/settings";
 import { decide } from "@vqueue/connector-core/decide";
 import { createSensor } from "@vqueue/connector-core/tc";
 import { logPhase } from "@vqueue/connector-core/timing";
-import { markForRenewal, redirectResponse, stripInternalHeaders, toRequest } from "../cloudfront.js";
+import { redirectResponse, toRequest } from "../cloudfront.js";
 import { createConfigProvider } from "../runtime-config.js";
 // Lo escribe `npm run build` con los datos del cliente, o queda con
 // placeholders en el bundle sin configurar (que lee la config de Secrets Manager).
@@ -71,9 +72,6 @@ export async function handler(event) {
     const cold = coldStart;
     coldStart = false;
 
-    // Siempre, incluso en fail-open: el header interno nunca viene del visitante.
-    stripInternalHeaders(cfRequest);
-
     let timer;
     const deadline = new Promise((resolve) => {
         timer = setTimeout(() => {
@@ -113,9 +111,6 @@ async function handleRequest(cfRequest) {
                 return redirectResponse(decision.location, decision.cookies);
 
             case "allow":
-                // La renovación viaja a viewer-response por header interno.
-                return decision.renew ? markForRenewal(cfRequest, decision.renew) : cfRequest;
-
             case "bypass":
             default:
                 return cfRequest;

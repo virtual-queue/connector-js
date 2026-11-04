@@ -1,14 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-    parseCookies,
-    toRequest,
-    redirectResponse,
-    cookieHeader,
-    markForRenewal,
-    readRenewal,
-    stripInternalHeaders,
-    RENEW_HEADER,
-} from "../src/cloudfront.js";
+import { parseCookies, toRequest, redirectResponse, cookieHeader } from "../src/cloudfront.js";
 
 // En Lambda@Edge los headers son claves en minúscula y cada una es un ARRAY de
 // {key, value}. Es la fuente clásica de bugs al portar código de otro edge.
@@ -120,37 +111,5 @@ describe("cloudfront — respuestas", () => {
         expect(value).toContain("Secure");
         expect(value).toContain("SameSite=Lax");
         expect(value).toContain("Max-Age=600");
-    });
-});
-
-describe("cloudfront — puente entre las dos lambdas", () => {
-    it("viewer-request marca y viewer-response lee la renovación", () => {
-        const renew = { name: "vq_pass_ev-42", value: "xyz", maxAge: 600 };
-        const request = cfRequest({ headers: header("host", "shop.test") });
-
-        markForRenewal(request, renew);
-        expect(request.headers[RENEW_HEADER]).toBeDefined();
-
-        expect(readRenewal(request)).toEqual(renew);
-    });
-
-    it("sin marca no hay renovación", () => {
-        expect(readRenewal(cfRequest())).toBeNull();
-    });
-
-    it("una marca corrupta no rompe (devuelve null)", () => {
-        const request = cfRequest({ headers: header(RENEW_HEADER, "no-es-base64-json") });
-        expect(readRenewal(request)).toBeNull();
-    });
-
-    it("descarta la marca si la trae el visitante", () => {
-        // Si no, cualquiera podría pedirle a viewer-response la cookie que quiera.
-        const request = cfRequest({ headers: { ...header("host", "shop.test"), ...header(RENEW_HEADER, "x") } });
-
-        stripInternalHeaders(request);
-
-        expect(request.headers[RENEW_HEADER]).toBeUndefined();
-        expect(request.headers.host).toBeDefined();
-        expect(readRenewal(request)).toBeNull();
     });
 });

@@ -6,7 +6,8 @@ protection), but on the server side: a visitor can't bypass it by disabling
 JavaScript. Rules with a traffic threshold also **activate on their own** when the
 traffic arrives (see *Automatic activation*).
 
-It is two **Lambda@Edge** functions attached to a CloudFront distribution.
+It is one **Lambda@Edge** function attached to a CloudFront distribution, on the
+viewer-request event.
 
 ## What it does
 
@@ -25,7 +26,9 @@ It is two **Lambda@Edge** functions attached to a CloudFront distribution.
 5. **Automatic activation** — a rule with a threshold or a max load only queues
    while VirtualQueue's traffic counter says the event is active. A rule without
    thresholds queues every visitor without a pass, as before.
-6. **Sliding renewal** — while the visitor keeps browsing, the pass is extended.
+6. **Fixed budget** — the pass cookie lasts exactly `cookie_lifetime` (10 minutes by
+   default) from the moment the visitor leaves the queue. It is never renewed while
+   they browse: a checkout slower than that goes back to the queue.
 
 Everything fails open: with no settings, an unresponsive verify endpoint, or a bad
 config, the visitor gets through. A connector that breaks your site is worse than
@@ -66,7 +69,7 @@ never pay it.
 
 ## Installation
 
-There are two ways. Both end the same way: two Lambda@Edge functions attached to a
+There are two ways. Both end the same way: one Lambda@Edge function attached to a
 CloudFront behavior.
 
 ### A) With CloudFormation (recommended)
@@ -85,22 +88,21 @@ It asks for two values, plus an optional one:
   the panel. Only needed if some rule has a threshold or a max load (see *Automatic
   activation*). You can add it later by editing the secret.
 
-The stack creates the two functions, their role, and a **Secrets Manager** secret
+The stack creates the function, its role, and a **Secrets Manager** secret
 (`vqueue/connector`) that holds your key and token. They **never travel inside a
-zip**: the release zips are identical for every customer.
+zip**: the release zip is identical for every customer.
 
-When it finishes, *Outputs* lists the ARNs of the two function versions. One step
-is left that CloudFormation can't do for you: in CloudFront, edit the behavior you
-want to protect and add the two associations (**Viewer request** and **Viewer
-response**).
+When it finishes, *Outputs* lists the ARN of the function version. One step is
+left that CloudFormation can't do for you: in CloudFront, edit the behavior you
+want to protect and add the association (**Viewer request**).
 
 To rotate the key, edit the `vqueue/connector` secret; the functions pick it up
 within 5 minutes.
 
-### B) Downloading the zips
+### B) Downloading the zip
 
-Download `viewer-request.zip` and `viewer-response.zip` from the latest release
-(they ship unconfigured), or build them yourself with your own values:
+Download `viewer-request.zip` from the latest release (it ships unconfigured), or
+build it yourself with your own values:
 
 ```bash
 npm install
@@ -108,17 +110,16 @@ npm run build -- --client <subdomain> --private-key <private_key>
 ```
 
 With that build the config is embedded in the bundle, and you get
-`dist/viewer-request.zip` and `dist/viewer-response.zip`. The build packages with
-the system `zip` (available on macOS and Linux; on Windows use WSL or Git Bash).
+`dist/viewer-request.zip`. The build packages with the system `zip` (available on
+macOS and Linux; on Windows use WSL or Git Bash).
 
 Then, in AWS:
 
-1. Create two Lambda functions in **us-east-1** (Lambda@Edge can only be deployed
-   from there), Node.js 22 runtime, and upload one zip to each.
-2. Publish a version of each function (Lambda@Edge doesn't accept `$LATEST`).
-3. In your CloudFront distribution, on the behavior to protect, attach:
-   - **Viewer request** → the viewer-request function
-   - **Viewer response** → the viewer-response function
+1. Create a Lambda function in **us-east-1** (Lambda@Edge can only be deployed
+   from there), Node.js 22 runtime, and upload the zip.
+2. Publish a version of the function (Lambda@Edge doesn't accept `$LATEST`).
+3. In your CloudFront distribution, on the behavior to protect, attach it as
+   **Viewer request**.
 4. **Do not** add the `vq_pass_*` / `vq_target_*` cookies to the behavior's cache
    key. Viewer functions always see them, regardless of the cache policy; adding
    them would make every visitor (each pass is unique) fragment the CloudFront
@@ -167,21 +168,27 @@ These lines are **per request**: turn debug off when you are done measuring.
 ### Deleting the stack
 
 A Lambda@Edge function can't be deleted while CloudFront has it attached, and its
-replicas take a while to be released. First remove the associations from the
+replicas take a while to be released. First remove the association from the
 behavior, wait for the distribution to finish deploying, and only then delete the
 stack. The secret is scheduled for deletion, and its name can't be reused during that
 period.
 
-## Why two functions
+### Upgrading from a release with two functions
 
-`viewer-request` can return its own response (the 302 to the queue), but it **can't
-add a cookie to a response that comes from the origin**. Sliding renewal needs
-exactly that, which is why `viewer-response` exists.
+Releases up to 0.2.0 shipped a second function, `viewer-response`, whose only job
+was to extend the pass while the visitor browsed. The pass is no longer renewed, so
+that function is gone. Before updating the stack, remove the **Viewer response**
+association from the CloudFront behavior and wait for the distribution to finish
+deploying: CloudFormation can't delete a Lambda@Edge function that is still
+attached. The `viewer-request` function alone keeps queueing and issuing passes.
 
-The bridge between them is an internal header (`x-vq-renew`) that viewer-request
-adds to the request. Known trade-off: that header travels to the origin. If a
-visitor sends it themselves, viewer-request discards it before deciding anything:
-nobody can ask viewer-response to set an arbitrary cookie.
+## Why one function
+
+`viewer-request` can return its own response (the 302 to the queue, with the pass
+cookie when the visitor comes back from it), and that is all the connector needs:
+the pass cookie is written once and never rewritten on a response from the origin,
+so no `viewer-response` function is involved and no internal header travels to
+your origin.
 
 ## Performance and Lambda@Edge limits
 
