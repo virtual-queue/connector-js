@@ -95,7 +95,6 @@ describe("viewer-request con la config en Secrets Manager", () => {
         const res = await handler(event(`vq_pass_ev-42=${ELIXIR_PASS}`));
 
         expect(res.uri).toBe("/shop/entradas"); // pasa al origin
-        expect(res.headers["x-vq-renew"]).toBeDefined();
     });
 
     it("lee el secreto una sola vez por contenedor", async () => {

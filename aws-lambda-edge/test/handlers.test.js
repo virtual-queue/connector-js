@@ -1,9 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { RENEW_HEADER, cookieHeader } from "../src/cloudfront.js";
 import { _resetSettingsCache } from "@vqueue/connector-core/settings";
 
-// Tests de las dos lambdas de punta a punta, con la config inyectada igual que
-// lo hace el build (mock del módulo generado).
+// Tests de la lambda de punta a punta, con la config inyectada igual que lo
+// hace el build (mock del módulo generado).
 const SECRET = "test-private-key-abc123";
 const ELIXIR_PASS =
     "eyJlIjoiZXYtNDIiLCJleHAiOjE3MDAwMDM2MDAsImlhdCI6MTcwMDAwMDAwMCwidCI6IjExMTExMTExLTExMTEtMTExMS0xMTExLTExMTExMTExMTExMSJ9" +
@@ -34,8 +33,8 @@ const SETTINGS_BODY = {
     },
 };
 
-function event({ uri = "/shop/entradas", querystring = "", method = "GET", cookie = null, extraHeaders = {} } = {}) {
-    const headers = { host: [{ key: "host", value: "shop.test" }], ...extraHeaders };
+function event({ uri = "/shop/entradas", querystring = "", method = "GET", cookie = null } = {}) {
+    const headers = { host: [{ key: "host", value: "shop.test" }] };
     if (cookie) headers.cookie = [{ key: "cookie", value: cookie }];
     return { Records: [{ cf: { request: { uri, querystring, method, headers } } }] };
 }
@@ -65,13 +64,16 @@ describe("viewer-request", () => {
         expect(res.headers.location[0].value).toBe("https://orome.virtual-queue.com/queue/ev-42");
     });
 
-    it("deja pasar al que tiene pase válido y lo marca para renovación", async () => {
+    it("deja pasar al que tiene pase válido sin tocar el request", async () => {
         const { handler } = await import("../src/viewer-request/index.js");
-        const res = await handler(event({ cookie: `vq_pass_ev-42=${ELIXIR_PASS}` }));
+        const ev = event({ cookie: `vq_pass_ev-42=${ELIXIR_PASS}` });
+        const res = await handler(ev);
 
-        // Devuelve el request (sigue al origin), no una respuesta.
+        // Devuelve el request intacto (sigue al origin), no una respuesta. El
+        // pase no se renueva: no hay header interno ni cookie que reescribir.
+        expect(res).toBe(ev.Records[0].cf.request);
         expect(res.uri).toBe("/shop/entradas");
-        expect(res.headers[RENEW_HEADER]).toBeDefined();
+        expect(Object.keys(res.headers).sort()).toEqual(["cookie", "host"]);
     });
 
     it("saltea assets sin tocar la red", async () => {
@@ -80,15 +82,6 @@ describe("viewer-request", () => {
 
         expect(res.uri).toBe("/shop/app.css");
         expect(globalThis.fetch).not.toHaveBeenCalled();
-    });
-
-    it("descarta un x-vq-renew que venga del visitante, incluso en bypass", async () => {
-        const { handler } = await import("../src/viewer-request/index.js");
-        const forged = { [RENEW_HEADER]: [{ key: RENEW_HEADER, value: "forjado" }] };
-
-        const res = await handler(event({ uri: "/shop/app.css", extraHeaders: forged }));
-
-        expect(res.headers[RENEW_HEADER]).toBeUndefined();
     });
 
     it("canjea un token UUID y vuelve al destino sin el token", async () => {
@@ -140,55 +133,5 @@ describe("viewer-request", () => {
 
         const res = await handler(broken);
         expect(res).toBe(broken.Records[0].cf.request);
-    });
-});
-
-describe("viewer-response", () => {
-    it("agrega el Set-Cookie de la renovación a la respuesta del origin", async () => {
-        const { handler } = await import("../src/viewer-response/index.js");
-
-        const renew = { name: "vq_pass_ev-42", value: ELIXIR_PASS, maxAge: 600 };
-        const marked = Buffer.from(JSON.stringify(renew), "utf8").toString("base64url");
-
-        const res = await handler({
-            Records: [{
-                cf: {
-                    request: { headers: { [RENEW_HEADER]: [{ key: RENEW_HEADER, value: marked }] } },
-                    response: { status: "200", headers: {} },
-                },
-            }],
-        });
-
-        expect(res.headers["set-cookie"][0].value).toBe(cookieHeader(renew));
-    });
-
-    it("conserva los Set-Cookie que ya traía el origin", async () => {
-        const { handler } = await import("../src/viewer-response/index.js");
-
-        const renew = { name: "vq_pass_ev-42", value: "x", maxAge: 600 };
-        const marked = Buffer.from(JSON.stringify(renew), "utf8").toString("base64url");
-
-        const res = await handler({
-            Records: [{
-                cf: {
-                    request: { headers: { [RENEW_HEADER]: [{ key: RENEW_HEADER, value: marked }] } },
-                    response: {
-                        status: "200",
-                        headers: { "set-cookie": [{ key: "Set-Cookie", value: "session=abc" }] },
-                    },
-                },
-            }],
-        });
-
-        expect(res.headers["set-cookie"]).toHaveLength(2);
-        expect(res.headers["set-cookie"][0].value).toBe("session=abc");
-    });
-
-    it("sin marca devuelve la respuesta intacta", async () => {
-        const { handler } = await import("../src/viewer-response/index.js");
-        const response = { status: "200", headers: {} };
-
-        const res = await handler({ Records: [{ cf: { request: { headers: {} }, response } }] });
-        expect(res).toBe(response);
     });
 });

@@ -4,24 +4,9 @@
 // ARRAY de {key, value} (un header puede repetirse). Es la fuente habitual de
 // bugs al portar código de otros edges, así que todo el acceso pasa por acá.
 
-// Header interno con el que viewer-request le avisa a viewer-response que tiene
-// que renovar el pase. Es la única forma de pasar estado entre las dos lambdas.
-// Contrapartida: viaja al origin.
-export const RENEW_HEADER = "x-vq-renew";
-
 export function headerValue(headers, name) {
     const entry = headers?.[name.toLowerCase()];
     return entry && entry.length > 0 ? entry[0].value : null;
-}
-
-// El header interno es nuestro: lo que traiga el visitante se descarta antes de
-// decidir nada. Si no, cualquiera podría pedirle a viewer-response que emita la
-// cookie que quiera con solo mandar el header.
-export function stripInternalHeaders(cfRequest) {
-    if (cfRequest?.headers && RENEW_HEADER in cfRequest.headers) {
-        delete cfRequest.headers[RENEW_HEADER];
-    }
-    return cfRequest;
 }
 
 // Los valores van percent-encoded (ver cookieHeader); se decodifican al leer.
@@ -91,22 +76,4 @@ export function redirectResponse(location, cookies = []) {
     }
 
     return { status: "302", statusDescription: "Found", headers };
-}
-
-// Marca el request para que viewer-response renueve el pase.
-export function markForRenewal(cfRequest, renew) {
-    cfRequest.headers[RENEW_HEADER] = [
-        { key: RENEW_HEADER, value: Buffer.from(JSON.stringify(renew), "utf8").toString("base64url") },
-    ];
-    return cfRequest;
-}
-
-export function readRenewal(cfRequest) {
-    const raw = headerValue(cfRequest?.headers, RENEW_HEADER);
-    if (!raw) return null;
-    try {
-        return JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
-    } catch {
-        return null;
-    }
 }

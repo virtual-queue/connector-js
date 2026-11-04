@@ -4,8 +4,8 @@
 //
 // Genera dist-release/releases/ con la estructura que espera el template:
 //
-//   releases/v<versión>/{template.yaml, viewer-request.zip, viewer-response.zip}
-//   releases/latest/{template.yaml, viewer-request.zip, viewer-response.zip}
+//   releases/v<versión>/{template.yaml, viewer-request.zip}
+//   releases/latest/{template.yaml, viewer-request.zip}
 //
 // Los zips salen SIN configurar: no llevan datos de ningún cliente, así que son
 // seguros de publicar. La versión sale de package.json.
@@ -56,7 +56,6 @@ for (const folder of [`v${version}`, "latest"]) {
     await mkdir(dir, { recursive: true });
     await writeFile(path.join(dir, "template.yaml"), template);
     await cp(path.join(BUILD, "viewer-request.zip"), path.join(dir, "viewer-request.zip"));
-    await cp(path.join(BUILD, "viewer-response.zip"), path.join(dir, "viewer-response.zip"));
 }
 await rm(BUILD, { recursive: true, force: true });
 

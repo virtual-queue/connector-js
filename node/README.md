@@ -85,17 +85,13 @@ measuring.
    matching one: by priority, first match wins.
 4. **Pass** — verifies the HMAC signature **offline** with the `private_key`. It
    doesn't call VirtualQueue on every request.
-5. **Sliding renewal** — while the visitor keeps browsing, the pass is extended.
+5. **Fixed budget** — the pass cookie lasts exactly `cookie_lifetime` (10 minutes by
+   default) from the moment the visitor leaves the queue. It is never renewed while
+   they browse: a checkout slower than that goes back to the queue.
 
 Everything fails open: with no settings, no API, or an incomplete config, the
 visitor gets through. An SDK that takes down your site is worse than one that
 doesn't queue.
-
-## Advantage over Lambda@Edge
-
-Sliding renewal happens in a single pass. Lambda@Edge needs a second function
-(`viewer-response`) because a `viewer-request` function can't touch a response that
-doesn't exist yet.
 
 ## Limitations
 

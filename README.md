@@ -21,8 +21,8 @@ One click opens CloudFormation with everything pre-filled (region `us-east-1`):
 [![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/new?stackName=vqueue-connector&templateURL=https%3A%2F%2Fvirtual-queue-connector-releases.s3.amazonaws.com%2Freleases%2Flatest%2Ftemplate.yaml)
 
 It asks for your subdomain and your `private_key`, which are stored in a secret in
-your own AWS account (never inside a zip). Then you attach the two functions to
-your CloudFront distribution. See the [full guide](aws-lambda-edge/README.md).
+your own AWS account (never inside a zip). Then you attach the function to your
+CloudFront distribution. See the [full guide](aws-lambda-edge/README.md).
 
 ## How it decides
 
@@ -37,7 +37,9 @@ your CloudFront distribution. See the [full guide](aws-lambda-edge/README.md).
    VirtualQueue's traffic counter says the event is active (Lambda@Edge and
    Cloudflare Worker connectors; the counter receives totals, never visitor data).
    A rule without thresholds queues every visitor without a pass.
-5. While the visitor keeps browsing, the pass is renewed.
+5. The pass lasts exactly `cookie_lifetime` (10 minutes by default) from the moment
+   the visitor leaves the queue. It is never renewed while they browse: a checkout
+   slower than that goes back to the queue.
 
 **Everything fails open.** With no settings, no API, or an incomplete config, the
 visitor gets through: a connector that breaks your site is worse than one that

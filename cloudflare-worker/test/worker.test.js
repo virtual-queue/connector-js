@@ -81,14 +81,12 @@ describe("redirect a la sala de espera", () => {
 });
 
 describe("visitante con pase", () => {
-    it("pasa al origin y renueva el pase", async () => {
+    it("pasa al origin sin renovar el pase", async () => {
         const res = await worker.fetch(req("/shop/entradas", { cookie: `vq_pass_ev-42=${PASS}` }), ENV);
 
         expect(res.status).toBe(200);
         expect(await res.text()).toBe("origin ok");
-        const renewed = res.headers.get("set-cookie");
-        expect(renewed).toContain("vq_pass_ev-42=");
-        expect(renewed).toContain("Max-Age=600");
+        expect(res.headers.get("set-cookie")).toBeNull();
     });
 
     it("un pase firmado con otra clave no entra", async () => {
@@ -222,7 +220,7 @@ describe("endurecimiento", () => {
         expect(new URL(res.headers.get("location")).host).toBe("shop.test");
     });
 
-    it("la renovación conserva los Set-Cookie del origin", async () => {
+    it("con pase, devuelve los Set-Cookie del origin sin agregar el del pase", async () => {
         origin.mockImplementation(async () => {
             const h = new Headers();
             h.append("Set-Cookie", "session=abc; Path=/");
@@ -231,7 +229,7 @@ describe("endurecimiento", () => {
         });
         const res = await worker.fetch(req("/shop/entradas", { cookie: `vq_pass_ev-42=${PASS}` }), ENV);
         const names = res.headers.getSetCookie().map((c) => c.split("=")[0]);
-        expect(names).toEqual(expect.arrayContaining(["session", "cart", "vq_pass_ev-42"]));
+        expect(names).toEqual(["session", "cart"]);
     });
 
     it("un fetch/XHR protegido no pisa el destino guardado", async () => {

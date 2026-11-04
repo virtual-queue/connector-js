@@ -103,12 +103,13 @@ describe("decide — ACLs", () => {
 });
 
 describe("decide — pase", () => {
-    it("con pase válido pasa y lo renueva", async () => {
+    it("con pase válido pasa sin reescribir la cookie", async () => {
         const cookies = { [passCookieName("ev-42")]: ELIXIR_PASS };
         const d = await decide(req({ cookies }), CONFIG, deps());
 
-        expect(d.type).toBe("allow");
-        expect(d.renew).toEqual({ name: "vq_pass_ev-42", value: ELIXIR_PASS, maxAge: 600 });
+        // Sin `renew`: el pase dura cookie_lifetime desde que se emitió y no se
+        // extiende mientras el visitante navega.
+        expect(d).toEqual({ type: "allow" });
     });
 
     it("con pase vencido vuelve a la cola", async () => {
@@ -375,7 +376,6 @@ describe("decide — modo por evento (activación automática)", () => {
         const d = await decide(autoReq({ cookies }), CONFIG, { ...deps({ settings: AUTO_SETTINGS }), sensor });
 
         expect(d.type).toBe("allow");
-        expect(d.renew).toBeTruthy();
         expect(sensor.observe).not.toHaveBeenCalled();
     });
 
