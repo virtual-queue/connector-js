@@ -7,6 +7,10 @@
 //   node scripts/build.mjs --client orome --private-key <clave> [--tc-token <token>] [--admin-host ...] [--debug]
 //   node scripts/build.mjs --unconfigured [--out dist]
 //
+// Cualquiera de los dos acepta `--format esm` para un bundle ES module
+// (index.mjs) en lugar de CommonJS (index.js, el default). El handler sigue
+// siendo `index.handler` en los dos casos.
+//
 // El resultado queda en dist/: viewer-request.zip
 //
 // `--unconfigured` arma el bundle SIN datos del cliente: es el que se publica en
@@ -42,6 +46,12 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 const UNCONFIGURED = args.unconfigured === true;
 const DIST = path.resolve(ROOT, typeof args.out === "string" ? args.out : "dist");
+const FORMAT = typeof args.format === "string" ? args.format : "cjs";
+
+if (FORMAT !== "cjs" && FORMAT !== "esm") {
+    console.error(`--format tiene que ser cjs o esm (vino: ${args.format})`);
+    process.exit(1);
+}
 
 if (!UNCONFIGURED && (!args.client || !args["private-key"])) {
     console.error(`
@@ -58,6 +68,7 @@ Falta configuración.
   --tc-url        Default: https://tc.virtual-queue.com
   --admin-host    Default: clients.virtual-queue.com
   --debug         Logs verbosos (NO usar en producción: son por request)
+  --format        cjs (default, index.js) o esm (index.mjs)
 `);
     process.exit(1);
 }
@@ -123,7 +134,10 @@ async function assertUnconfigured(outfile, name) {
 }
 
 async function bundle(name) {
-    const outfile = path.join(DIST, name, "index.js");
+    // .mjs y no .js: Lambda (y Node) eligen ESM o CJS por la extensión o por el
+    // package.json más cercano. Con .mjs el bundle es ESM sin depender de que el
+    // zip o el proyecto del cliente traigan `"type": "module"`.
+    const outfile = path.join(DIST, name, FORMAT === "esm" ? "index.mjs" : "index.js");
 
     await build({
         entryPoints: [path.join(ROOT, "src", name, "index.js")],
@@ -131,11 +145,14 @@ async function bundle(name) {
         bundle: true,
         platform: "node",
         target: "node20",
-        // Lambda@Edge espera CommonJS con `exports.handler`.
-        format: "cjs",
+        // cjs: `exports.handler`. esm: `export async function handler`, para
+        // clientes que importan el conector desde su propio código ES module (un
+        // index.js CJS dentro de un paquete `"type": "module"` rompe con
+        // `require is not defined`).
+        format: FORMAT,
         minify: false, // legible: el cliente lo audita antes de instalarlo
         plugins: UNCONFIGURED ? [] : [configPlugin()],
-        banner: { js: `// VQueue connector — ${name} — ${UNCONFIGURED ? "sin configurar (Secrets Manager)" : `client: ${config.client}`}` },
+        banner: { js: `// VQueue connector — ${name} — ${FORMAT} — ${UNCONFIGURED ? "sin configurar (Secrets Manager)" : `client: ${config.client}`}` },
     });
 
     if (UNCONFIGURED) await assertUnconfigured(outfile, name);

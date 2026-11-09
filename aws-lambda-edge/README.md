@@ -113,6 +113,10 @@ With that build the config is embedded in the bundle, and you get
 `dist/viewer-request.zip`. The build packages with the system `zip` (available on
 macOS and Linux; on Windows use WSL or Git Bash).
 
+The bundle is CommonJS (`index.js`) by default. If you import the connector from
+your own ES module code, add `--format esm` to get an `index.mjs` instead. Either
+way the Lambda handler stays `index.handler`.
+
 Then, in AWS:
 
 1. Create a Lambda function in **us-east-1** (Lambda@Edge can only be deployed
