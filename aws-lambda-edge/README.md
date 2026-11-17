@@ -147,19 +147,50 @@ With `debug` on, the connector logs one line per phase to CloudWatch, so you can
 tell a cold container apart from a slow network call:
 
 ```
-[timing] config 412ms secret      ← reading the Secrets Manager secret (path A only)
-[timing] settings 1483ms ok       ← GET /api/v1/adapter/:client/settings
-[timing] verify 607ms ok          ← POST /queue/verify, only when returning from the queue
-[timing] sensor 118ms active      ← traffic counter tick, only with a tcToken
-[timing] decide 1502ms redirect   ← the whole decision, including the waits above
-[timing] request 1961ms cold      ← the whole viewer-request, and whether it was
-                                    the container's first invocation
+[timing] config 412ms cpu=30ms secret      ← reading the Secrets Manager secret (path A only)
+[timing] settings 1483ms cpu=106ms ok      ← GET /api/v1/adapter/:client/settings
+[timing] verify 607ms cpu=12ms ok          ← POST /queue/verify, only when returning from the queue
+[timing] sensor 118ms cpu=4ms active       ← traffic counter tick, only with a tcToken
+[timing] decide 1502ms cpu=108ms redirect  ← the whole decision, including the waits above
+[timing] connect clients.virtual-queue.com 1101ms cpu=79ms
+                                           ← a new socket: DNS + TCP + TLS, together
+[timing] ttfb clients.virtual-queue.com 1390ms cpu=98ms 200 new
+                                           ← request created → response headers
+[timing] request 1961ms cpu=141ms cold     ← the whole viewer-request, and whether it was
+                                             the container's first invocation
 ```
 
 A phase that does not appear did not run: no `settings` line means the container
 already had them cached. `cold` vs `warm` matters because the settings cache lives
 **per container**, and Lambda@Edge cannot be pre-warmed — with low traffic, many
 visitors land on a cold container and pay the full chain.
+
+**`cpu=`** is the CPU time the function spent during that phase. Lambda hands out CPU
+in proportion to memory (a full vCPU only at 1,769 MB), and a viewer-request function
+is capped at 128 MB: about 7% of a vCPU. So the ratio tells two causes apart that the
+wall time mixes up:
+
+- `settings 1800ms cpu=130ms`: about 0.07, the function was running out of CPU.
+- `settings 1800ms cpu=8ms`: well under 0.07, it was waiting on the network or the server.
+
+**`connect` and `ttfb`** come from the fetch itself (Node's `fetch` publishes them on
+`diagnostics_channel`), one pair per network call. `connect` shows up only when a
+socket was opened; `ttfb … new` includes that connection, and `ttfb … reused` means a
+keep-alive socket was still open. They are logged at the end of the invocation, just
+before `request`; a fetch still in flight when the deadline let the visitor through
+shows up in the next invocation instead.
+
+To summarize a time window in CloudWatch Logs Insights (on the log group of each
+region where the function ran, `/aws/lambda/us-east-1.<function-name>`):
+
+```
+filter @message like /\[timing\] /
+| parse @message /\[timing\] (?<phase>\S+) (?:(?<host>\S+) )?(?<wall>\d+)ms cpu=(?<cpu>\d+)ms/
+| filter ispresent(cpu) and wall > 0
+| fields cpu / wall as cpu_share
+| stats count(*) as n, pct(wall, 50) as wall_p50, pct(wall, 95) as wall_p95,
+        pct(cpu, 50) as cpu_p50, avg(cpu_share) as cpu_share_avg by phase, host
+```
 
 Turning it on, depending on how you installed:
 
