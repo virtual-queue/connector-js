@@ -97,6 +97,16 @@ describe("viewer-request con la config en Secrets Manager", () => {
         expect(res.uri).toBe("/shop/entradas"); // pasa al origin
     });
 
+    it("lee el secreto y las reglas en el Init, antes del primer visitante", async () => {
+        secretResponse = secretOk();
+
+        await import("../src/viewer-request/index.js");
+
+        expect(secretsCalls).toHaveBeenCalledTimes(1);
+        const urls = fetch.mock.calls.map(([url]) => String(url));
+        expect(urls.some((u) => u.includes("/api/v1/adapter/orome/settings"))).toBe(true);
+    });
+
     it("lee el secreto una sola vez por contenedor", async () => {
         secretResponse = secretOk();
 

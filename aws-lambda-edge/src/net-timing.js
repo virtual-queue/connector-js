@@ -52,8 +52,12 @@ function hostOf(origin) {
     }
 }
 
+// Los errores de undici traen un `code` de texto (UND_ERR_CONNECT_TIMEOUT). Un
+// abort es un DOMException, cuyo `code` es el número legado 20: ahí dice más el
+// nombre (AbortError, TimeoutError).
 function reasonOf(error) {
-    return error?.code || error?.name || "unknown";
+    if (typeof error?.code === "string" && error.code) return error.code;
+    return error?.name || "unknown";
 }
 
 /**

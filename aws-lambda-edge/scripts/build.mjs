@@ -7,9 +7,10 @@
 //   node scripts/build.mjs --client orome --private-key <clave> [--tc-token <token>] [--admin-host ...] [--debug]
 //   node scripts/build.mjs --unconfigured [--out dist]
 //
-// Cualquiera de los dos acepta `--format esm` para un bundle ES module
-// (index.mjs) en lugar de CommonJS (index.js, el default). El handler sigue
-// siendo `index.handler` en los dos casos.
+// El bundle es un ES module (index.mjs) y el handler sigue siendo
+// `index.handler`. No hay salida CommonJS: el módulo espera, con un await de
+// nivel superior, a que el Init lea la config y las reglas, y CommonJS no lo
+// permite.
 //
 // El resultado queda en dist/: viewer-request.zip
 //
@@ -46,10 +47,10 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 const UNCONFIGURED = args.unconfigured === true;
 const DIST = path.resolve(ROOT, typeof args.out === "string" ? args.out : "dist");
-const FORMAT = typeof args.format === "string" ? args.format : "cjs";
-
-if (FORMAT !== "cjs" && FORMAT !== "esm") {
-    console.error(`--format tiene que ser cjs o esm (vino: ${args.format})`);
+// `--format esm` se sigue aceptando (era la opción antes de 0.5.0); CommonJS ya no.
+const FORMAT = "esm";
+if (args.format !== undefined && args.format !== "esm") {
+    console.error(`--format: el bundle solo sale como ES module (index.mjs). CommonJS no admite el await del Init (vino: ${args.format})`);
     process.exit(1);
 }
 
@@ -68,7 +69,6 @@ Falta configuración.
   --tc-url        Default: https://tc.virtual-queue.com
   --admin-host    Default: clients.virtual-queue.com
   --debug         Logs verbosos (NO usar en producción: son por request)
-  --format        cjs (default, index.js) o esm (index.mjs)
 `);
     process.exit(1);
 }
@@ -84,6 +84,7 @@ const config = UNCONFIGURED ? null : {
     settingsTimeoutMs: 3_000,
     verifyTimeoutMs: 2_000,
     deadlineMs: 4_000,
+    initBudgetMs: 1_000,
     debug: args.debug === true,
 };
 

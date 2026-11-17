@@ -22,5 +22,7 @@ export const CONFIG = {
     // Presupuesto total del viewer-request antes de soltar al visitante (el timeout
     // de la función es 5 s).
     deadlineMs: 4000,
+    // Cuánto espera el Init a la config y las reglas antes de seguir sin ellas.
+    initBudgetMs: 1000,
     debug: false,
 };

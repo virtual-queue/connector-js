@@ -59,14 +59,30 @@ afterEach(() => {
 const timingLines = () => logs.filter((l) => l.startsWith("[timing]"));
 
 describe("viewer-request con debug", () => {
-    it("cada fase trae su CPU y la red sale antes de la línea del request", async () => {
+    it("en el Init carga el fetch y trae las reglas, y el primer visitante no va a la red", async () => {
+        const { handler } = await import("../src/viewer-request/index.js");
+
+        expect(logs).toContainEqual(expect.stringMatching(/^\[timing\] preload \d+ms cpu=\d+ms init$/));
+        expect(logs).toContainEqual(expect.stringMatching(/^\[timing\] warmup \d+ms cpu=\d+ms ok$/));
+        expect(fetch).toHaveBeenCalledTimes(1);
+
+        logs.length = 0;
+        await handler(event());
+
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(timingLines().some((l) => l.startsWith("[timing] settings"))).toBe(false);
+        expect(timingLines().at(-1)).toMatch(/^\[timing\] request \d+ms cpu=\d+ms cold$/);
+    });
+
+    it("con el cache vencido, el request trae las reglas: cada fase con su CPU y la red antes de la línea del request", async () => {
         const { handler } = await import("../src/viewer-request/index.js");
         await handler(event());
 
         const lines = timingLines();
         expect(lines).toContainEqual(expect.stringMatching(/^\[timing\] settings \d+ms cpu=\d+ms ok$/));
         expect(lines).toContainEqual(expect.stringMatching(/^\[timing\] decide \d+ms cpu=\d+ms redirect$/));
-        expect(lines.at(-1)).toMatch(/^\[timing\] request \d+ms cpu=\d+ms cold$/);
+        // El Init ya pasó en el test anterior: este request es tibio.
+        expect(lines.at(-1)).toMatch(/^\[timing\] request \d+ms cpu=\d+ms warm$/);
 
         const connect = lines.findIndex((l) => /^\[timing\] connect admin\.test \d+ms cpu=\d+ms$/.test(l));
         const ttfb = lines.findIndex((l) => /^\[timing\] ttfb admin\.test \d+ms cpu=\d+ms 200 new$/.test(l));
