@@ -113,9 +113,10 @@ With that build the config is embedded in the bundle, and you get
 `dist/viewer-request.zip`. The build packages with the system `zip` (available on
 macOS and Linux; on Windows use WSL or Git Bash).
 
-The bundle is CommonJS (`index.js`) by default. If you import the connector from
-your own ES module code, add `--format esm` to get an `index.mjs` instead. Either
-way the Lambda handler stays `index.handler`.
+The bundle is an ES module (`index.mjs`) and the Lambda handler stays
+`index.handler`. Since 0.5.0 there is no CommonJS build: the module waits, during
+Init, for the config and the rules (see *Performance and Lambda@Edge limits*), and
+CommonJS can't do that.
 
 Then, in AWS:
 
@@ -147,8 +148,10 @@ With `debug` on, the connector logs one line per phase to CloudWatch, so you can
 tell a cold container apart from a slow network call:
 
 ```
-[timing] preload 75ms cpu=73ms init        ← loading Node's fetch during Init, once per container
-                                             (only with debug baked into the build, path B)
+[timing] preload 66ms cpu=66ms init        ← loading Node's fetch during Init, once per container
+[timing] warmup 410ms cpu=68ms ok          ← reading the config and the rules during Init: ok,
+                                             sin-config, budget (gave up waiting) or error
+                                             (both Init lines need debug baked into the build, path B)
 [timing] config 412ms cpu=30ms secret      ← reading the Secrets Manager secret (path A only)
 [timing] settings 1483ms cpu=106ms ok      ← GET /api/v1/adapter/:client/settings
 [timing] verify 607ms cpu=12ms ok          ← POST /queue/verify, only when returning from the queue
@@ -246,9 +249,10 @@ your origin.
 A viewer-request function has a **5 s timeout and 128 MB**, and if it exceeds the
 timeout CloudFront returns a 503 to the visitor. Measured on a real function:
 
-- **Cold container:** ~1.3 s in the function, plus ~210 ms of Init (path A, medians of
-  10 cold containers: reading the secret ~0.86 s, the settings ~0.38 s). It was ~2.5 s
-  before the connector loaded Node's fetch during Init; see below.
+- **Cold container (Init + first request):** ~0.83 s with the config in Secrets
+  Manager (path A) and ~0.56 s with the config in the bundle (path B), down from
+  ~2.65 s before 0.5.0. Medians of 10 cold containers, Madrid edge running in
+  eu-west-2: the first request itself takes ~90-120 ms.
 - **Warm container:** 10–20 ms.
 
 That's why the connector has a total budget of 4 s: if something hangs (the secret,
@@ -261,14 +265,18 @@ answers, so the refresh only finishes if the next request arrives within
 `settingsTimeoutMs`; with sparser traffic that next request waits for a fresh copy
 instead (~300–700 ms, once every `settingsTtlMs`).
 
-The first request of a container pays this once per CloudFront edge location and
-again after the container is recycled. Most of what it used to cost was CPU, not
-network: a viewer-request gets about 7% of a vCPU, and loading Node's `fetch` on the
-first call (~80 ms of CPU) took ~1.4 s before a single byte went out. During Init the
-function gets the whole CPU, so the connector loads `fetch` there
-(`src/preload.js`): Init grows by ~80 ms and the first request drops by ~1.1 s. What
-is left is mostly network: opening the connections to Secrets Manager in
-`us-east-1` and to the Admin API.
+A container pays this once per CloudFront edge location and again after it is
+recycled. Most of what it used to cost was CPU, not network: a viewer-request gets
+about 7% of a vCPU, and the first network call of a container (loading Node's
+`fetch`, compiling code, the first TLS handshake: 100-150 ms of CPU) took 1.5-2.5 s.
+During Init the function gets the whole CPU, so the connector does that work there:
+it loads `fetch` (`src/preload.js`) and reads the config and the rules
+(`src/warmup.js`) before the first visitor arrives.
+
+Init waits for that at most `initBudgetMs` (1 s): if Secrets Manager or the Admin
+API are slow, Init moves on and the first request picks up whatever is still in
+flight, as before 0.5.0. Measured (path A): the secret takes ~0.3 s from Europe
+(it lives in `us-east-1`) and the rules ~0.1 s, so Init is ~0.64 s.
 For the same reason it reads the secret with a hand-signed request instead of the AWS
 SDK, whose import alone takes ~2.5 s at 128 MB.
 

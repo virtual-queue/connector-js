@@ -23,6 +23,7 @@ import { phase, setCpuClock } from "@vqueue/connector-core/timing";
 import { redirectResponse, toRequest } from "../cloudfront.js";
 import { cpuMs, startNetTiming } from "../net-timing.js";
 import { preloadFetch } from "../preload.js";
+import { warmUp } from "../warmup.js";
 import { createConfigProvider } from "../runtime-config.js";
 // Lo escribe `npm run build` con los datos del cliente, o queda con
 // placeholders en el bundle sin configurar (que lee la config de Secrets Manager).
@@ -142,3 +143,17 @@ async function handleRequest(cfRequest) {
         return cfRequest;
     }
 }
+
+// Init: la config (horneada o de Secrets Manager) y las reglas se leen acá, con
+// la CPU entera, y el primer visitante las encuentra en el cache (ver
+// ../warmup.js). Este await de nivel superior es lo que obliga a que el bundle
+// sea un ES module.
+const INIT_BUDGET_MS = Number(BAKED.initBudgetMs) || 1_000;
+const warmed = phase(logger, "warmup");
+const warmOutcome = await warmUp(async () => {
+    const config = await getConfig();
+    if (!config) return "sin-config";
+    await getSettings(config, { sortRules, logger: loggerFor(config) });
+    return "ok";
+}, { budgetMs: INIT_BUDGET_MS });
+warmed(warmOutcome, logger);
