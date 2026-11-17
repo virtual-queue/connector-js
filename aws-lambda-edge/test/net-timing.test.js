@@ -75,6 +75,18 @@ describe("net-timing — eventos de undici", () => {
         ]);
     });
 
+    it("de un abort muestra el nombre y no el código numérico 20", () => {
+        const c = clocks();
+        timing = startNetTiming({ now: c.now, cpu: c.cpu });
+        const request = { origin: "https://clients.virtual-queue.com" };
+
+        publish("undici:request:create", { request });
+        c.advance(3000, 40);
+        publish("undici:request:error", { request, error: new DOMException("This operation was aborted", "AbortError") });
+
+        expect(timing.drain()).toEqual(["[timing] ttfb clients.virtual-queue.com 3000ms cpu=40ms error AbortError reused"]);
+    });
+
     it("drain vacía el buffer y el buffer tiene tope", () => {
         const c = clocks();
         timing = startNetTiming({ now: c.now, cpu: c.cpu, maxLines: 2 });

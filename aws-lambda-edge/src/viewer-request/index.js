@@ -22,6 +22,7 @@ import { createSensor } from "@vqueue/connector-core/tc";
 import { phase, setCpuClock } from "@vqueue/connector-core/timing";
 import { redirectResponse, toRequest } from "../cloudfront.js";
 import { cpuMs, startNetTiming } from "../net-timing.js";
+import { preloadFetch } from "../preload.js";
 import { createConfigProvider } from "../runtime-config.js";
 // Lo escribe `npm run build` con los datos del cliente, o queda con
 // placeholders en el bundle sin configurar (que lee la config de Secrets Manager).
@@ -35,6 +36,15 @@ setCpuClock(cpuMs);
 const netTiming = startNetTiming();
 
 let logger = buildLogger(BAKED);
+
+// Se carga el fetch acá, en el Init, donde la función tiene la CPU entera, y no
+// en el primer request, donde tiene ~7% (ver ../preload.js). Con debug horneado
+// (camino B) deja `[timing] preload … init`; en el camino A el debug llega
+// recién con el secreto y esta línea no sale.
+const preloaded = phase(logger, "preload");
+preloadFetch();
+preloaded("init");
+
 const getConfig = createConfigProvider(BAKED, { logger });
 
 // El bundle sin configurar trae debug en false y la config real recién llega
@@ -56,10 +66,11 @@ let coldStart = true;
 
 // Un viewer-request tiene 5 s de timeout y, si se pasa, CloudFront le devuelve un
 // 503 al visitante: el fail-open de adentro no alcanza, porque un timeout no es
-// una excepción. En un contenedor frío la primera llamada de red tarda ~2 s
-// (medido a 128 MB, el máximo para este tipo de función) y encima suma la
-// latencia hacia us-east-1. Pasado este presupuesto se suelta al visitante: lo
-// que quedó en vuelo sigue y llena el cache para el próximo request.
+// una excepción. En un contenedor frío la primera llamada de red tardaba ~2 s
+// (medido a 128 MB, el máximo para este tipo de función; ~0,9 s con la precarga
+// del fetch) y encima suma la latencia hacia us-east-1. Pasado este presupuesto
+// se suelta al visitante: lo que quedó en vuelo sigue y llena el cache para el
+// próximo request.
 const DEADLINE_MS = Number(BAKED.deadlineMs) || 4_000;
 
 // El sensor vive con el contenedor (sus contadores y el estado cacheado). Se

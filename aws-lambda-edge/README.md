@@ -147,6 +147,8 @@ With `debug` on, the connector logs one line per phase to CloudWatch, so you can
 tell a cold container apart from a slow network call:
 
 ```
+[timing] preload 75ms cpu=73ms init        ← loading Node's fetch during Init, once per container
+                                             (only with debug baked into the build, path B)
 [timing] config 412ms cpu=30ms secret      ← reading the Secrets Manager secret (path A only)
 [timing] settings 1483ms cpu=106ms ok      ← GET /api/v1/adapter/:client/settings
 [timing] verify 607ms cpu=12ms ok          ← POST /queue/verify, only when returning from the queue
@@ -244,8 +246,9 @@ your origin.
 A viewer-request function has a **5 s timeout and 128 MB**, and if it exceeds the
 timeout CloudFront returns a 503 to the visitor. Measured on a real function:
 
-- **Cold container:** ~2.5 s (the first network call of a new container takes ~2 s;
-  after that, 100–400 ms per call).
+- **Cold container:** ~1.3 s in the function, plus ~210 ms of Init (path A, medians of
+  10 cold containers: reading the secret ~0.86 s, the settings ~0.38 s). It was ~2.5 s
+  before the connector loaded Node's fetch during Init; see below.
 - **Warm container:** 10–20 ms.
 
 That's why the connector has a total budget of 4 s: if something hangs (the secret,
@@ -259,11 +262,15 @@ answers, so the refresh only finishes if the next request arrives within
 instead (~300–700 ms, once every `settingsTtlMs`).
 
 The first request of a container pays this once per CloudFront edge location and
-again after the container is recycled. Nothing in the connector can shorten it: the
-cost is the first network call of a fresh Node process at 128 MB, not module
-initialization (~120 ms) nor the Admin API (~300 ms warm).
-And that's why it reads the secret with a hand-signed request instead of the AWS SDK,
-whose import alone takes ~2.5 s at 128 MB.
+again after the container is recycled. Most of what it used to cost was CPU, not
+network: a viewer-request gets about 7% of a vCPU, and loading Node's `fetch` on the
+first call (~80 ms of CPU) took ~1.4 s before a single byte went out. During Init the
+function gets the whole CPU, so the connector loads `fetch` there
+(`src/preload.js`): Init grows by ~80 ms and the first request drops by ~1.1 s. What
+is left is mostly network: opening the connections to Secrets Manager in
+`us-east-1` and to the Admin API.
+For the same reason it reads the secret with a hand-signed request instead of the AWS
+SDK, whose import alone takes ~2.5 s at 128 MB.
 
 ## Contracts with VirtualQueue
 

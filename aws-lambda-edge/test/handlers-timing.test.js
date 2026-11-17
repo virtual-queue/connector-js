@@ -59,6 +59,12 @@ afterEach(() => {
 const timingLines = () => logs.filter((l) => l.startsWith("[timing]"));
 
 describe("viewer-request con debug", () => {
+    it("carga el fetch al importar el módulo, es decir en el Init", async () => {
+        await import("../src/viewer-request/index.js");
+
+        expect(logs).toContainEqual(expect.stringMatching(/^\[timing\] preload \d+ms cpu=\d+ms init$/));
+    });
+
     it("cada fase trae su CPU y la red sale antes de la línea del request", async () => {
         const { handler } = await import("../src/viewer-request/index.js");
         await handler(event());
