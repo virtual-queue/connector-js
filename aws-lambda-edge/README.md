@@ -208,6 +208,20 @@ behavior, wait for the distribution to finish deploying, and only then delete th
 stack. The secret is scheduled for deletion, and its name can't be reused during that
 period.
 
+### Upgrading to a new release
+
+- **Path A (Secrets Manager)**: in CloudFormation, update the `vqueue-connector`
+  stack, replace its template with
+  `https://virtual-queue-connector-releases.s3.amazonaws.com/releases/latest/template.yaml`,
+  and set **ReleaseVersion** to the new release: the console keeps the stack's
+  current value. The stack publishes a new version of the function. Copy the new
+  `ViewerRequestArn` from *Outputs* into the behavior's **Viewer request**
+  association in CloudFront and wait for the distribution to finish deploying;
+  until then CloudFront keeps running the previous version. The secret is not
+  touched.
+- **Path B (your own build)**: upload the new `viewer-request.zip` (or your new
+  build), publish a version, and point the association at that version's ARN.
+
 ### Upgrading from a release with two functions
 
 Releases up to 0.2.0 shipped a second function, `viewer-response`, whose only job
