@@ -19,12 +19,20 @@ import { sortRules } from "@vqueue/connector-core/acl";
 import { getSettings } from "@vqueue/connector-core/settings";
 import { decide } from "@vqueue/connector-core/decide";
 import { createSensor } from "@vqueue/connector-core/tc";
-import { logPhase } from "@vqueue/connector-core/timing";
+import { phase, setCpuClock } from "@vqueue/connector-core/timing";
 import { redirectResponse, toRequest } from "../cloudfront.js";
+import { cpuMs, startNetTiming } from "../net-timing.js";
 import { createConfigProvider } from "../runtime-config.js";
 // Lo escribe `npm run build` con los datos del cliente, o queda con
 // placeholders en el bundle sin configurar (que lee la config de Secrets Manager).
 import { CONFIG as BAKED } from "../generated-config.js";
+
+// Con `debug`, cada fase dice cuánta CPU gastó y cada fetch cuánto tardó en
+// abrir la conexión: a 128 MB la función tiene ~7% de una vCPU, y sin estos dos
+// datos no se distingue "esperó a la red" de "se quedó sin CPU". Con `debug` en
+// false cuesta un par de lecturas de reloj por fase y por fetch.
+setCpuClock(cpuMs);
+const netTiming = startNetTiming();
 
 let logger = buildLogger(BAKED);
 const getConfig = createConfigProvider(BAKED, { logger });
@@ -68,7 +76,7 @@ function sensorFor(config) {
 
 export async function handler(event) {
     const cfRequest = event.Records[0].cf.request;
-    const startedAt = Date.now();
+    const done = phase(logger, "request");
     const cold = coldStart;
     coldStart = false;
 
@@ -86,7 +94,8 @@ export async function handler(event) {
         clearTimeout(timer);
         // `logger` se lee acá y no antes: para este punto ya es el de la
         // config resuelta, que es la que sabe si debug está encendido.
-        logPhase(logger, "request", Date.now() - startedAt, cold ? "cold" : "warm");
+        for (const line of netTiming.drain()) logger.log?.(line);
+        done(cold ? "cold" : "warm", logger);
     }
 }
 
